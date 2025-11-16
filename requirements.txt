@@ -1,0 +1,23 @@
+# YOLO检测核心
+ultralytics>=8.0.0          # YOLOv8官方库，包含模型和推理引擎
+
+# 深度学习框架
+torch>=2.0.0                # PyTorch，神经网络的基础
+torchvision>=0.15.0         # PyTorch的视觉工具包
+
+# 计算机视觉基础
+opencv-python>=4.8.0        # OpenCV，视频/图像处理的瑞士军刀
+numpy>=1.24.0               # 数值计算基础
+
+# 可视化
+matplotlib>=3.7.0           # 画图表
+Pillow>=10.0.0              # 图片处理
+
+# 数据处理
+pandas>=2.0.0               # CSV处理
+
+# 多目标跟踪（Stage 2）
+boxmot>=10.0.0              # ByteTrack等跟踪算法
+
+# 语义查询（Stage 4）
+transformers>=4.37.0        # CLIP等预训练模型
