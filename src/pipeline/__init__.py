@@ -3,8 +3,9 @@
 from .config import SystemConfig
 from .perception import VideoPerception, TrackRecord
 from .features import TrackFeatureExtractor, TrackFeatures
-from .semantic import SemanticDescriptor, SemanticProfile
-from .retrieval import SemanticRetrievalEngine
+from .evidence import EvidencePackage, build_evidence_packages
+from .recall import RecallEngine
+from .vlm_client import QwenVLMClient, QueryResult
 
 __all__ = [
     "SystemConfig",
@@ -12,7 +13,9 @@ __all__ = [
     "TrackRecord",
     "TrackFeatureExtractor",
     "TrackFeatures",
-    "SemanticDescriptor",
-    "SemanticProfile",
-    "SemanticRetrievalEngine",
+    "EvidencePackage",
+    "build_evidence_packages",
+    "RecallEngine",
+    "QwenVLMClient",
+    "QueryResult",
 ]

@@ -1,4 +1,4 @@
-"""Entry point for the refactored perception → semantic → retrieval pipeline."""
+"""Phase 1 entry point: question-driven person retrieval."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ from pipeline import (
     SystemConfig,
     VideoPerception,
     TrackFeatureExtractor,
-    SemanticDescriptor,
-    SemanticRetrievalEngine,
+    build_evidence_packages,
+    RecallEngine,
+    QwenVLMClient,
 )
 
 
@@ -23,8 +24,9 @@ class VideoSemanticSystem:
         self.track_records = None
         self.metadata = None
         self.features = None
-        self.profiles = None
-        self.retrieval = None
+        self.evidence_map = None
+        self.recall_engine = RecallEngine()
+        self.vlm_client = QwenVLMClient(self.config)
 
     def build_index(self) -> None:
         print("\n=== Stage 1: Perception ===")
@@ -36,50 +38,59 @@ class VideoSemanticSystem:
         self.features = feature_extractor.extract(self.track_records)
         print("   ✅ 轨迹特征完成")
 
-        print("\n=== Stage 3: Semantic Annotation ===")
-        descriptor = SemanticDescriptor(self.config)
-        self.profiles = descriptor.describe_tracks(self.track_records, self.features)
-        print(f"   ✅ 生成语义 profile 数: {len(self.profiles)}")
-
-        print("\n=== Stage 4: Retrieval Setup ===")
-        self.retrieval = SemanticRetrievalEngine(
-            self.config, self.track_records, self.profiles
+        print("\n=== Stage 3: 构建证据包 ===")
+        video_id = Path(self.config.video_path).stem
+        self.evidence_map = build_evidence_packages(
+            video_id, self.track_records, self.metadata, self.features
         )
-        print("   ✅ 检索引擎就绪")
+        print(f"   ✅ 构建 {len(self.evidence_map)} 个证据包")
 
         self._persist_database()
 
-    def query(self, query_name: str, *, structured=None, text: str | None = None) -> list[int]:
-        if self.retrieval is None:
-            raise RuntimeError("请先 build_index() 再查询")
+    def question_search(self, question: str, *, top_k: int = 5, recall_limit: int | None = None):
+        if self.evidence_map is None:
+            raise RuntimeError("请先运行 build_index()")
 
-        if structured:
-            track_ids = self.retrieval.search_structured(structured)
-        elif text:
-            track_ids = self.retrieval.search_text(text)
-        else:
-            raise ValueError("必须提供 structured 或 text 查询条件")
+        print("\n=== 查询: 问题驱动检索 ===")
+        print(f"描述: {question}")
 
-        if not track_ids:
-            print(f"   ❌ 查询 {query_name} 没有结果")
+        candidates = self.recall_engine.recall(question, self.evidence_map, recall_limit)
+        print(f"   🔎 候选轨迹数: {len(candidates)}")
+
+        vlm_results = self.vlm_client.answer(question, candidates)
+        if not vlm_results:
+            print("   ❌ 未找到匹配轨迹")
             return []
 
-        image_output = self.config.output_dir / f"result_{query_name}.jpg"
-        self.retrieval.visualize(track_ids, image_output)
+        vlm_results.sort(key=lambda r: r.score, reverse=True)
+        selected = vlm_results[:top_k]
 
-        video_output = self.config.output_dir / f"tracking_{query_name}.mp4"
+        print("   ✅ VLM 匹配结果:")
+        for item in selected:
+            print(
+                f"      - Track {item.track_id}: {item.start_s:.1f}s → {item.end_s:.1f}s | 理由: {item.reason}"
+            )
+
+        track_ids = [item.track_id for item in selected]
+        safe_name = question.replace(" ", "_")
+        video_output = self.config.output_dir / f"tracking_{safe_name}.mp4"
         self.perception.render_highlight_video(
             self.track_records,
             self.metadata,
             track_ids,
             video_output,
-            label_text=query_name,
+            label_text=question,
         )
 
-        return track_ids
+        return selected
 
     def _persist_database(self) -> None:
         db_path = self.config.output_dir / "semantic_database.json"
+        feature_payload = (
+            {str(tid): feature.to_dict() for tid, feature in self.features.items()}
+            if self.features
+            else {}
+        )
         payload = {
             "video": str(self.config.video_path),
             "tracks": {
@@ -90,9 +101,7 @@ class VideoSemanticSystem:
                 }
                 for tid, record in self.track_records.items()
             },
-            "profiles": {
-                str(tid): profile.to_dict() for tid, profile in self.profiles.items()
-            },
+            "features": feature_payload,
         }
         with open(db_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -104,8 +113,7 @@ def run_demo() -> None:
     system.build_index()
 
     print("\n=== Demo Queries ===")
-    # 穿紫色衣服的人（基于 VLM 颜色识别）
-    system.query("穿紫色衣服的人", structured=[("color", "purple")])
+    system.question_search("找出穿紫色衣服的人", top_k=5)
 
 
 if __name__ == "__main__":
