@@ -1,5 +1,5 @@
 """Centralized configuration for the semantic video system."""
-
+# field：用来定义特殊的字段（比如"这个字段不在初始化时设置，而是后面自动生成"）
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,7 +9,7 @@ class SystemConfig:
     """Runtime configuration shared across pipeline modules."""
 
     # I/O
-    video_path: Path = Path("/Users/neko_wen/my/代码/uw/cv/project/data/raw/core/MOT17-04.mp4")
+    video_path: Path = Path("/Users/neko_wen/my/代码/uw/cv/project/data/raw/core/MOT17-09.mp4")
     output_dir: Path = Path("output_full_system_MOT17_04")
 
     # Detection / tracking
