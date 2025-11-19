@@ -41,6 +41,8 @@ env/
 # Output directories
 output*/
 results/
+result/
+run/
 
 # Data (if large)
 # Uncomment if needed:
