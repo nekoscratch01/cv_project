@@ -29,6 +29,13 @@ class SystemConfig:
     highlight_color: tuple[int, int, int] = (0, 0, 255)
     max_preview_tracks: int = 5
 
+    # Behavior / ROI (Phase 2 hooks)
+    # 定义 ROI 区域用于停留时间等行为分析，格式: [(name, (x1,y1,x2,y2)), ...]
+    roi_zones: list[tuple[str, tuple[int, int, int, int]]] = field(default_factory=list)
+    # 跟随事件检测阈值（像素距离）
+    follow_distance_thresh: float = 80.0
+    follow_min_frames: int = 30
+
     # Derived paths (initialized post-creation)
     crops_dir: Path = field(init=False)
 
