@@ -1,215 +1,276 @@
-# 🎯 系统蓝图（简版）——用人话理解视频里的人和事件
+# 🧭 系统蓝图总览
 
-> 这是一份给“我们自己看得懂”的系统规划：现在做到哪、下一步做什么、以后大概往哪长。
-
----
-
-## 1. 想做成什么样？
-
-我们要做的是一个可以在**长视频、多目标（人 / 车 / 其他实体）**场景下工作的系统：
-
-- 能稳定完成：检测 + 跟踪 + 轨迹统计；
-- 用户可以用一句自然语言提问：  
-  「帮我找出穿紫色衣服的人」「找戴牛仔帽的人」「找背圆形包的人」；
-- 系统要返回：
-  - 找到了哪些人（track_id）；
-  - 每个人大概出现在视频的哪一段时间（起止秒）；
-  - 带红框的视频和拼在一起的截图；
-  - 一句简单解释（为什么认为这是目标）。
-
-整个系统围绕一个核心抽象：**轨迹 Track**。  
-一条 Track = 同一个人在视频中的一段连续运动 + 若干代表性图片 + 一些数值特征。
+> 这一份文档现在分成两层：  
+> **Part I**：当前代码已经实现/正在实现的 Phase 0–2 蓝图（方便对照 src 目录和测试）。  
+> **Part II**：更完整的 Edge‑Detective v5.0 架构（长期“施工图纸”，不要求一次到位）。
 
 ---
 
-## 2. 阶段划分
+## Part I：现有实现蓝图（Phase 0–2）
 
-> 当前代码大概在 **Phase 0.5**：感知和轨迹特征已经有了，但“问题驱动找人”的主流程还没真正做完。
+### 1. 当前核心类型（和代码对应）
 
-### 2.1 Phase 0 —— 只负责“切干净”（已基本完成）
+| 概念 | 文件 | 作用 |
+|------|------|------|
+| `TrackRecord` | `src/perception.py` | YOLO+ByteTrack 输出的原始轨迹：`track_id, frames, bboxes, crops` |
+| `VideoMetadata` | `src/perception.py` | `fps, width, height, total_frames`，用于时间/尺寸对齐 |
+| `TrackFeatures` | `src/features.py` | 轨迹的 Level‑0 几何特征：`duration_s, path_length_px, avg_speed_px_s, max_speed_px_s` |
+| `EvidencePackage` | `src/evidence.py` | 面向各层模型的证据包：`video_id, track_id, frames, bboxes, crops, fps, motion(TrackFeatures)` |
+| `QueryResult` | `src/vlm_client.py` | VLM 对每条轨迹在某个问题下的判断结果：`track_id, start_s, end_s, score, reason` |
 
-目标：把视频可靠地切成“按人/track 的证据包”，并能在视频上高亮轨迹。
-
-- **感知层**
-  - YOLOv11 + ByteTrack，对单条视频做多目标跟踪；
-  - 对每个 `track_id` 记录：帧号 `frames`、框 `bboxes`、裁剪图 `crops`；
-  - 能按给定的 track_id 列表在原视频上画红框，导出 `tracking_xxx.mp4`。
-
-- **运动特征**
-  - 对每条轨迹计算：平均速度、最大速度、路径长度、持续时间；
-  - 用于：
-    - 检查跟踪质量；
-    - 为以后“徘徊、尾随、超速”等行为问题预留结构化信息。
-
-- **现有语义代码**
-  - 之前的 `color / has_backpack` 等字段只是实验品，只证明“VLM 能看裁剪图”；
-  - 真正方案是 Phase 1 的“问题驱动 QA”，不会继续扩这套固定字段。
+这些类型已经在代码里实现，是目前所有流程的数据基础。
 
 ---
 
-### 2.2 Phase 1 —— 单视频、人检索、问题驱动 QA（现在要做的）
+### 2. Phase 0 —— 感知与轨迹索引
 
-**一句话版本：**  
-先把每个人切成“证据包”，用户问一句话，系统把所有人（或候选人）的证据包交给 VLM，让它选出谁符合描述、大概在哪几秒出现，然后系统帮忙画框和导出视频。
+**一句话目标**：  
+把一条“乱糟糟的原始视频”切成一批**干净的轨迹对象**，并能随时在原视频上高亮其中任何一条轨迹。
 
-#### 2.2.1 索引阶段（离线一次）
+可以把 Phase 0 理解成：  
+> 只做基础设施，不回答任何问题，只保证切得干净、时间对齐、能画框。
 
-输入：一条视频。  
-输出：`track_id → EvidencePackage`。
+**组件与文件（按处理顺序）**
 
-- 使用 Phase 0 的感知层：
-  - 视频 → YOLOv11 + ByteTrack → `track_id → {frames, bboxes, crops}`；
-  - 同时计算简单运动特征（速度 / 时长等）。
-- 为每个 track 构建 **EvidencePackage（证据包）**，主要包含（我们刻意把核心数值指标控制在 10 个以内）：  
-  - 若干代表性裁剪图（同一人多帧采样，数量控制在 3–6 张）；  
-  - 帧号、FPS，用来对齐时间轴；  
-  - 少量“几何真相”级的数值特征（例如：轨迹持续时间 `duration_s`、路径长度 `path_length_px`、平均速度 `avg_speed_px_s`、最大速度 `max_speed_px_s`；后续如需扩展新特征，也尽量让总数保持在 10 个以内）；  
-  - 预留扩展字段（以后用于行为标签、场景信息等按需推导的结果）。
+- `VideoPerception` (`src/perception.py`)  
+  - 输入：`SystemConfig.video_path`（当前通常指 MOT17 合成的视频路径）。  
+  - 输出：`Dict[int, TrackRecord]` + `VideoMetadata`。  
+  - 负责：
+    - 用 YOLOv11 逐帧检测人；  
+    - 用 ByteTrack 把检测结果串成 `track_id`；  
+    - 对每条轨迹采样若干代表性裁剪图，写入 `config.crops_dir`。  
+  - 直观理解：它负责回答 “这条视频里有哪些人？各自在第几帧在哪个框？”。
 
-证据包是后续所有检索 / QA 的唯一输入形式，上游模型怎么换都不影响这一层。
+- `TrackFeatureExtractor` (`src/features.py`)  
+  - 输入：`track_records` + `VideoMetadata.fps`。  
+  - 输出：`Dict[int, TrackFeatures]`。  
+  - 负责：为每条轨迹算最基础的几何量：
+    - `duration_s`：出现在视频里的总时间；  
+    - `path_length_px`：中心点走过的总路程；  
+    - `avg_speed_px_s`：平均速度；  
+    - `max_speed_px_s`：最大瞬时速度。  
+  - 这些都是“几何真相”，不牵涉任何“嫌疑 / 偷东西”这种语义。
 
-#### 2.2.2 查询阶段（两步：召回 + VLM 精排）
+- `build_evidence_packages` (`src/evidence.py`)  
+  - 输入：`video_id, track_records, metadata, features`。  
+  - 输出：`Dict[int, EvidencePackage]`。  
+  - 负责把 raw 轨迹 + 几何特征打包成统一的 `EvidencePackage`，为后面 Recall/VLM/行为模块提供统一接口。
 
-输入：一句话问题，例如：
+- `render_highlight_video` (`VideoPerception.render_highlight_video`)  
+  - 输入：`track_records, metadata, target_ids, output_path`。  
+  - 输出：高亮轨迹视频（优先 H.264 编码，失败时回退）。  
+  - 用途：人工检查感知与索引是否靠谱（人有没有“丢框”“跳框”）。
 
-- 「找出穿紫色衣服的人」
-- 「找出戴牛仔帽的人」
-- 「找出背圆形背包的人」
+**如何只测 Phase 0？**
 
-输出：一批匹配的轨迹 + 时间区间 + 理由 + 高亮视频。
+- 跑单测：  
+  - `tests/test_phase1_components.py::test_build_evidence_packages_computes_timings`  
+    - 检查 EvidencePackage 的时间戳（起止秒）与运动特征是否正确。  
+- 手动调用：
 
-**Step 1：轻量召回（RecallEngine）**
-
-- 目标：从所有轨迹中选出一批候选（比如 20～50 条），降低 VLM 的工作量；
-- 手段（可以逐步增强）：
-  - v0：直接返回所有轨迹（即“无召回”的 degenerate 版本）；
-  - v1：用 CLIP / 颜色直方图/ 简单规则做宽松过滤，保证高召回率。
-- 召回阶段只负责“减负”，不做最终决策，错杀风险需要在实验里评估。
-
-**Step 2：VLM 精排与判定（VLMClient）**
-
-- 对每个候选轨迹：
-  - 取该轨迹的证据包（多张裁剪 + 运动特征）；
-  - 和问题一起喂给 Qwen2‑VL；
-  - 让模型回答：
-    - 是否匹配（yes/no 或 score）；
-    - 一句简短解释（reason，如 “wearing a purple jacket and a black backpack”）。
-- 系统收集所有候选的回答，过滤出匹配轨迹，按 score 排序。
-
-内部理想的结构化输出形式类似：
-
-```json
-[
-  {
-    "track_id": 3,
-    "start_s": 12.3,
-    "end_s": 27.8,
-    "score": 0.94,
-    "reason": "The person wears a purple jacket and a black backpack."
-  },
-  ...
-]
-```
-
-其中 `start_s / end_s` 由系统根据 `frames + fps` 计算，模型只负责“是不是 + 为什么”，不自己算时间轴。
-
-**Step 3：映射回视频 & 可视化**
-
-- 对每个命中的 `track_id`：
-  - 用 `frames + fps` 得到时间区间（起止秒）；
-  - 在原视频上画红框，导出 `tracking_<query>.mp4`（注意：这种“轨迹小视频”是按需渲染的输出，不作为证据包的必备字段；证据包只需保存能够重建它的索引信息——帧号与 bbox）；  
-  - 拼接几张代表裁剪图作为结果截图；
-  - 把 `reason` 一起输出给用户。
-
-**Phase 1 完成标准：**
-
-- 对任意一条视频 + 任意一句“描述某类人”的自然语言：
-  - 系统能稳定返回一批 track_id；
-  - 每条轨迹有清晰的时间区间（秒）；
-  - 有高亮视频 + 截图 + 一行解释；
-  - 整条链路只依赖：EvidencePackage + RecallEngine + VLMClient 抽象，而不是提前写死一堆字段。
+  ```python
+  system = VideoSemanticSystem(config)
+  system.build_index()  # 只跑 Phase 0
+  # 再用 VideoPerception.render_highlight_video 看几个 track 的高亮视频
+  ```
 
 ---
 
-## 3. Phase 2 以后：行为与事件（只做大纲）
+### 3. Phase 1 —— 单视频、人检索、问题驱动 QA
 
-等 Phase 1 稳定后，再考虑这些增强功能：
+**一句话目标**：  
+用户用一句自然语言描述“想找的人”，系统在这条视频里把所有人拿出来问一遍 VLM，最后告诉你：谁最像、在哪几秒、为什么。
 
-### 3.1 行为特征
+可以把 Phase 1 想象成：  
+> 在 Phase 0 那堆 EvidencePackage 上，先粗选，再让 VLM 做“逐人问询”。
 
-- 在现有运动特征基础上，增加：
-  - 区域停留时间（门口、收银台等 ROI）；
-  - 两人距离曲线（用于尾随 / 同行）；
-  - 加速 / 急停等模式。
-- 这些特征用于**发现候选片段**（例如“徘徊超过 30 秒”），不是直接由 LLM 判定。
+**组件与文件**
 
-### 3.2 事件建模
+- `RecallEngine` (`src/recall.py`)  
+  - Phase 1 版本：`recall(question, evidence_map, limit)` 目前是“全量返回 + 可选截断”，等价于 v6 中 `visual_filter` 的 v0 实现（尚未接 SigLIP）。  
+  - 现在它完全不看 `question` 内容，只负责：
+    - 把 `evidence_map.values()` 转成列表；  
+    - 如果 `limit` 不为 None，就只取前 `limit` 条。
 
-- 在轨迹之上引入 `Event` 抽象，例如：跟随、超速、聚集；
-- 发现流程：规则 + 特征筛出候选 → 把短片段 + 摘要交给 VLM/LLM → 让模型写出自然语言描述。
+- `QwenVLMClient` (`src/vlm_client.py`)  
+  - `answer(question, candidates, top_k)`：对每个候选轨迹调用一次 Qwen2‑VL，让模型判断“像不像题目描述的人”。  
+  - 内部步骤（简版）：
+    1. 从每个 `EvidencePackage` 中选 3 张裁剪图（清晰度优先）；  
+    2. 拼出一个包含问题 + 运动特征的小 prompt；  
+    3. 通过 `transformers` + `qwen_vl_utils` 调用模型；  
+    4. 解析输出为 `QueryResult(track_id, start_s, end_s, score, reason)`。
 
-### 3.3 语义检索
+- `VideoSemanticSystem` (`src/video_semantic_search.py`)  
+  - `build_index()`：Phase 0 的 orchestrator + 构建 `evidence_map`。  
+  - `question_search(question, top_k=5, recall_limit=None)`：
+    1. 调用 `RecallEngine.recall` 选出候选轨迹集合；  
+    2. 把这些候选交给 `QwenVLMClient.answer`；  
+    3. 按 score 排序，取前 `top_k`；  
+    4. 打印结果 + 调 `render_highlight_video` 生成 `tracking_<safe_question>.mp4`。
 
-- 对轨迹 / 事件的描述做文本 embedding；
-- 支持“在整个视频库中查找某种行为/事件”的语义检索；
-- 查询：文本 → 向量 → 检索候选 → 再交给 LLM 精排与解释。
+**单独测试入口**
 
-### 3.4 多层模型协作（CLIP → 2B VLM → 大模型）
-
-长期目标不是“只用一个 2B 模型”，而是构建一个多层协作的推理链路，让最贵的大模型承担真正的推理与解释，前面两层主要负责减负和过滤：
-
-- **Tier 0：感知模型**  
-  YOLO + 跟踪 → 生成所有实体的轨迹与证据包。
-
-- **Tier 1：快速视觉召回（例如 CLIP / 颜色 / 规则）**  
-  - 用 Query 文本 + CLIP 图文相似度 + 简单规则，先排除明显不相关的对象（例如“找人”时直接扔掉车，复杂 prompt 没提车时尽量减少将车辆引入候选集）；  
-  - 目标是把候选轨迹数从几百压到几十，但不做最终裁决。
-
-- **Tier 2：中等大小 VLM（例如 Qwen2‑VL 2B）**  
-  - 在 Tier 1 候选集上，对每个证据包回答“是否满足描述中的硬条件”（有没有戴帽子、是不是红衣服、有没有背包等）；  
-  - 再次过滤掉明显不满足条件的轨迹。
-
-- **Tier 3：更大模型 / 更强 VLM（主心骨）**  
-  - 只看前两层筛完后仍然“高度可疑”的少量轨迹；  
-  - 输入：这些轨迹的证据包 + 数值特征摘要 + 前两层的结论（例如“无帽子”“红色外套”“在门口徘徊 40 秒后突然加速离开”）；  
-  - 负责回答复杂、高级的问题，例如：  
-    - 「最后一个进入商店的人是谁？进店前干了什么？」  
-    - 「谁最像你描述的小偷？为什么？」  
-  - 输出结构化结论 + 自然语言解释；必要时可以再由一个小模型做二次总结给用户。
-
-> 设计思路：  
-> - Tier 1 / 2 主要是“福尔摩斯式排除法”（把不可能的先排干净）；  
-> - Tier 3 是真正的“脑子”，负责在少量高嫌疑候选上做复杂推理与对话；  
-> - 整个多层架构仍然围绕 EvidencePackage 与数值特征展开，不会与 Phase 1 的设计冲突。
+- `tests/test_phase1_components.py::test_recall_engine_limit`  
+  - 构造一个小的 `evidence_map`，检查 `limit` 为 1、2、None 时输出长度是否符合预期。  
+- `tests/test_phase1_components.py::test_question_search_uses_stub_vlm`  
+  - 用 StubVLMClient 替代真实 VLM，验证 `question_search` 是否正确调用 Recall 和渲染函数，而不依赖模型本身。
 
 ---
 
-## 4. 远期（multi-video + Redis + vLLM + K8s）
+### 4. Phase 2 —— 行为特征与基础事件 (ROI 停留 / 跟随)
 
-> 只记目标，不在当前阶段实现。
+**一句话目标**：  
+在不改变 Phase 1 主流程的前提下，为后续“徘徊、尾随”等行为问题准备好一组可复用的数学积木。
 
-- 多视频、多用户、多 worker 的架构：
-  - Redis / Kafka 做任务队列和缓存；
-  - 向量数据库存 embedding；
-  - vLLM 或其他推理服务托管 VLM/LLM；
-  - Kubernetes 管理各个服务的扩缩容。
-- 这些只是在 **RecallEngine / VLMClient / 存储层** 换实现，对 EvidencePackage 和 Phase 1 主流程不做破坏性修改。
+**新组件与文件**
+
+- `BehaviorFeatureExtractor` (`src/behavior.py`)  
+  - `compute_roi_dwell(tracks)`：  
+    - 基于 `SystemConfig.roi_zones` 中定义的矩形区域（如门口、收银台），统计每条轨迹在各 ROI 内停留的时间（秒）；  
+    - 输出 `Dict[int, List[RoiDwell]]`，每个 `RoiDwell` 记录 ROI 名称和停留时间。  
+  - 这些输出以后可以直接支持 v6 里的 `spatial_op="stay"` 等规则。
+
+- `EventDetector` (`src/behavior.py`)  
+  - `detect_follow_events(tracks)`：  
+    - 对所有轨迹对 (i, j) 计算在重叠时间段内的中心点距离；  
+    - 按 `follow_distance_thresh` + `follow_min_frames` 找出“持续靠得很近”的片段；  
+    - 输出 `List[FollowEvent(follower, target, start_s, end_s, min_distance)]`。  
+  - 这为未来的问题 “谁在跟着某个人？” 提供几何基础。
+
+- `SystemConfig` (`src/config.py`) 新增 Phase 2 钩子：  
+  - `roi_zones: List[(name, (x1,y1,x2,y2))]`：预定义场景里的关键位置；  
+  - `follow_distance_thresh: float`：多近算“跟着”；  
+  - `follow_min_frames: int`：要连续多少帧才算真的尾随。
+
+**单独测试入口**
+
+- `tests/test_phase2_behavior.py::test_roi_dwell_counts_seconds`  
+  - 用手工设计的小轨迹验证：在 ROI 内的帧数是否正确转成秒数。  
+- `tests/test_phase2_behavior.py::test_follow_event_detection`  
+  - 构造两个“明显在一起走”的轨迹，检查是否能检测出跟随事件。
+
+> 目前 Phase 2 模块尚未接入 `VideoSemanticSystem` 主流程，保持高解耦：  
+> 未来可以在 Hard Rule Engine 或更高层逻辑中按需组合使用这些行为结果。
 
 ---
 
-## 5. 设计原则（给自己看的 check-list）
+## Part II：通往 v6 的修改计划（Blueprint v6.0 Migration）
 
-1. **围绕轨迹抽象**
-   所有上游感知结果都折叠成 `track_id → EvidencePackage`；下游逻辑只依赖它。
+> v6 的完整“施工图纸”已经单独放在 `docs/edge_detective_blueprint_v6.md`。  
+> 这一部分只回答三个问题：  
+> 1）从现在的 Phase 0–2 怎么一步一步长成 v6？  
+> 2）每一步尽量保持高解耦、可单测？  
+> 3）未来接 live / Redis / 多视频 时不会推翻现有设计？
 
-2. **问题驱动，而不是字段驱动**
-   不预先列出一大堆属性字段，而是让用户的问题 + 证据包驱动 VLM 的判断。
+### 1. 数据协议对齐：从当前结构走向 Atomic 8
 
-3. **两阶段检索固定下来**
-   轻量召回（RecallEngine） + VLM 精排（VLMClient）是固定结构，小规模时召回可以退化为“全量”，但接口不变。
+目标：在不破坏现有逻辑和测试的前提下，让代码里的 `TrackFeatures` / `EvidencePackage` 渐进式靠近 v6 中的“Atomic 8 + EvidencePackage” 协议。
 
-4. **数值特征做“几何真相”，不是替代 VLM**
-   速度、停留时间、距离等由我们计算，保证可解释和可复现；VLM 负责在这些信息和图像基础上“讲人话”。
+- 在 `src/features.py` 中扩展 `TrackFeatures`：
+  - 增加时间与空间字段：`start_s, end_s, centroids, displacement_vec`；
+  - 全部从现有 `TrackRecord.frames + bboxes + VideoMetadata.fps` 推导出来；
+  - 保留原有字段 `duration_s, path_length_px, avg_speed_px_s, max_speed_px_s`，不删不改。
+- 在 `src/evidence.py` 中扩展 `EvidencePackage`：
+  - 增加 `meta: {video_id, fps, resolution}`；
+  - 增加 `raw_trace`（等价于现在的 `bboxes`，先做别名即可）；
+  - 增加 `embedding` 字段，初期固定为 `None`，等接入 SigLIP 后再真正写入向量；
+  - 保持现有字段名不变，保证 Phase 1/2 的调用与测试全部继续通过。
 
-5. **先把单视频离线场景做好**
-   在一个视频上把 Phase 1 全链路打磨扎实，再考虑 Redis、向量库、K8s 等工程化扩展。
+> 检查点：  
+> - 所有已有测试 (`test_phase1_components.py`, `test_phase2_behavior.py`) 仍然通过；  
+> - 新增字段可以在单独的小测试里验证数值正确性（如 `centroids` 是否在 0–1 之间，`displacement_vec` 是否等于终点减起点）。
+
+### 2. 行为特征 → Hard Rule Engine：把 Phase 2 变成 v6 的 Tier 0
+
+目标：复用现有 `BehaviorFeatureExtractor` / `EventDetector`，对上抽象成 v6 里的 Hard Rule Engine 接口，而不是堆在业务代码里。
+
+- 新增模块：`src/hard_rules.py`，提供统一入口：
+
+  ```python
+  def apply_hard_rules(
+      tracks: List[EvidencePackage],
+      rules: Dict
+  ) -> List[EvidencePackage]:
+      ...
+  ```
+
+- 实现思路：
+  - 利用 `EvidencePackage.features` 中的 `centroids / start_s / end_s / duration_s / avg_speed_px_s`，实现基础算子：
+    - ROI 相关：`enter / exit / stay / cross` 对应当前 ROI 停留逻辑；
+    - 跟随相关：在内部复用 `EventDetector.detect_follow_events`；
+    - 排序相关：`time_desc / speed_desc / duration_desc`。
+  - `rules` 为字典（由 Router 生成），但 Hard Rule Engine 本身不依赖任何 LLM。
+- 单测策略：
+  - 在 `tests/` 下新增 `test_hard_rules.py`；
+  - 用手工构造的 `EvidencePackage`（或把现有行为测试里的简单场景重用）来验证：
+    - `spatial_op="enter"` 时是否只返回进过 ROI 的轨迹；
+    - `sort_op="speed_desc"` 是否真的按平均速度排序；
+    - `limit` 是否生效。
+
+这样做之后，Phase 2 的“行为/事件”逻辑就自然升级为 v6 里的 Tier 0（会计师），同时保持和上层完全解耦。
+
+### 3. RecallEngine 升级：给未来 SigLIP 预留视觉筛选层
+
+目标：在不引入新模型的前提下，把现有 `RecallEngine` 的接口调整为 v6 设计的 `visual_filter` 风格，方便以后直接塞 SigLIP。
+
+- 在 `src/recall.py` 中：
+  - 保留当前的 `RecallEngine.recall(question, evidence_map, limit)` 以兼容旧代码；
+  - 新增一个更通用的函数/方法：
+
+    ```python
+    def visual_filter(
+        tracks: List[EvidencePackage],
+        tags: List[str],
+        top_k: int = 20,
+    ) -> List[EvidencePackage]:
+        ...
+    ```
+
+  - 当前实现可以是：
+    - 如果 `tags` 为空：直接返回前 `top_k` 条（或所有）；
+    - 如果 `tags` 非空：先用非常简单的 stub（例如根据 `video_id/track_id` 做伪相似度），只保证接口跑通，等接入 SigLIP 后再换成真向量检索。
+- 在 `VideoSemanticSystem.question_search` 中，可以逐步从：
+  - 直接调用 `RecallEngine.recall(...)` 过渡到：
+  - 先根据问题提炼 `tags`（手写规则也可以），再调用 `visual_filter(...)`。
+
+> 关键是：现在就把“召回层 → 精排层”的结构钉死，哪怕召回层暂时是 no‑op，也不要把所有逻辑都堆进 VLM 里。
+
+### 4. 预留 Router / Thinking 模型的位置，但暂时用手写规则代替
+
+目标：不在当前机器上硬上 Qwen3‑4B‑Thinking，但把 Router 这一层的“接口和职责”先安好，等硬件/模型准备好后可以平滑替换。
+
+- 新增模块：`src/router.py`：
+  - 定义 `ExecutionPlan` 的 Python 结构（`dataclass` 或 TypedDict），字段对齐 `edge_detective_blueprint_v6.md` 里的 JSON Schema；
+  - 实现一个简单版本：
+
+    ```python
+    def build_execution_plan(user_query: str) -> ExecutionPlan:
+        """
+        v0: 纯手写规则/if-else，把常见问题映射到 ExecutionPlan。
+        v1: 替换为 Qwen3-4B-Thinking 调用 + parse_router_output。
+        """
+    ```
+
+  - 同时实现 `parse_router_output(raw_output: str) -> Tuple[ExecutionPlan, str]` 的空壳/伪实现，用于未来接 Thinking 模型。
+- 在 `video_semantic_search.py` 中，逐步将“解析用户问题”的逻辑迁移到 Router：
+  - 当前可以在 `question_search` 里直接调用 `build_execution_plan(question)`；
+  - 对于简单场景（“找穿红衣服的人”、“最后一个进店的人”），手写规则即可覆盖。
+
+> 这一层的重点是“把自然语言 → 视觉标签 + 硬规则 + 验证 prompt”这个拆解职责独立出来，而不是立刻引入新模型。
+
+### 5. 为 live / Redis / 多视频 做扩展预留（只改边缘，不动核心）
+
+目标：保证将来接入 live 流、Redis 缓存、向量库、多视频检索时，核心抽象（TrackRecord / EvidencePackage / ExecutionPlan / Hard Rules / VLMClient）不需要改动，只是换实现。
+
+短期可以在文档层面定几个约束（代码逐步靠拢）：
+
+- 所有与“存储/缓存”相关的逻辑集中在一个薄层里（例如将来新增 `storage.py` / `index_store.py`），而不是散落在 `video_semantic_search.py` 中；
+- live 视频入口只负责把连续帧切成“片段 + TrackRecord 流”，对下游暴露的仍然是同一个 `Dict[int, TrackRecord] + VideoMetadata` 接口；
+- 将来引入 Redis / 向量库时：
+  - 只是在 Recall/Router/HardRules 层面增加“从远程索引/缓存拿 EvidencePackage/embedding”的路径；
+  - 不改变 EvidencePackage 的字段定义，也不改变 VLM 调用接口。
+
+> 简单理解：  
+> - v6 的大蓝图放在 `edge_detective_blueprint_v6.md`；  
+> - `system_blueprint.md` 负责记录“当前做到哪一步、下一步要改哪些模块”；  
+> - 每次大改动前，先更新这里的 Migration 小节，再去动代码和测试。
