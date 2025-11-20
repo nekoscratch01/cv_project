@@ -12,10 +12,10 @@
 
 | 概念 | 文件 | 作用 |
 |------|------|------|
-| `TrackRecord` | `src/perception.py` | YOLO+ByteTrack 输出的原始轨迹：`track_id, frames, bboxes, crops` |
-| `VideoMetadata` | `src/perception.py` | `fps, width, height, total_frames`，用于时间/尺寸对齐 |
-| `TrackFeatures` | `src/features.py` | 轨迹的 Level‑0 几何特征：`duration_s, path_length_px, avg_speed_px_s, max_speed_px_s` |
-| `EvidencePackage` | `src/evidence.py` | 面向各层模型的证据包：`video_id, track_id, frames, bboxes, crops, fps, motion(TrackFeatures)` |
+| `TrackRecord` | `src/core/perception.py` | YOLO+ByteTrack 输出的原始轨迹：`track_id, frames, bboxes, crops` |
+| `VideoMetadata` | `src/core/perception.py` | `fps, width, height, total_frames`，用于时间/尺寸对齐 |
+| `TrackFeatures` | `src/core/features.py` | 轨迹的 Level‑0 几何特征：`duration_s, path_length_px, avg_speed_px_s, max_speed_px_s` |
+| `EvidencePackage` | `src/core/evidence.py` | 面向各层模型的证据包：`video_id, track_id, frames, bboxes, crops, fps, motion(TrackFeatures)` |
 | `QueryResult` | `src/vlm_client.py` | VLM 对每条轨迹在某个问题下的判断结果：`track_id, start_s, end_s, score, reason` |
 
 这些类型已经在代码里实现，是目前所有流程的数据基础。
@@ -32,7 +32,7 @@
 
 **组件与文件（按处理顺序）**
 
-- `VideoPerception` (`src/perception.py`)  
+- `VideoPerception` (`src/core/perception.py`)  
   - 输入：`SystemConfig.video_path`（当前通常指 MOT17 合成的视频路径）。  
   - 输出：`Dict[int, TrackRecord]` + `VideoMetadata`。  
   - 负责：
@@ -41,7 +41,7 @@
     - 对每条轨迹采样若干代表性裁剪图，写入 `config.crops_dir`。  
   - 直观理解：它负责回答 “这条视频里有哪些人？各自在第几帧在哪个框？”。
 
-- `TrackFeatureExtractor` (`src/features.py`)  
+- `TrackFeatureExtractor` (`src/core/features.py`)  
   - 输入：`track_records` + `VideoMetadata.fps`。  
   - 输出：`Dict[int, TrackFeatures]`。  
   - 负责：为每条轨迹算最基础的几何量：
@@ -51,7 +51,7 @@
     - `max_speed_px_s`：最大瞬时速度。  
   - 这些都是“几何真相”，不牵涉任何“嫌疑 / 偷东西”这种语义。
 
-- `build_evidence_packages` (`src/evidence.py`)  
+- `build_evidence_packages` (`src/core/evidence.py`)  
   - 输入：`video_id, track_records, metadata, features`。  
   - 输出：`Dict[int, EvidencePackage]`。  
   - 负责把 raw 轨迹 + 几何特征打包成统一的 `EvidencePackage`，为后面 Recall/VLM/行为模块提供统一接口。
@@ -86,27 +86,24 @@
 
 **组件与文件**
 
-- `RecallEngine` (`src/recall.py`)  
-  - Phase 1 版本：`recall(question, evidence_map, limit)` 目前是“全量返回 + 可选截断”，等价于 v6 中 `visual_filter` 的 v0 实现（尚未接 SigLIP）。  
-  - 现在它完全不看 `question` 内容，只负责：
-    - 把 `evidence_map.values()` 转成列表；  
-    - 如果 `limit` 不为 None，就只取前 `limit` 条。
+- `RecallEngine` (`src/pipeline/recall.py`)  
+  - v7 版本：`visual_filter(tracks, description, visual_tags, top_k)` 使用 SigLIP 向量相似度从所有轨迹中选出 Top‑K 候选；  
+  - 同时保留 `recall(question, evidence_map, limit)` 作为兼容入口，内部调用 `visual_filter`。
 
-- `QwenVLMClient` (`src/vlm_client.py`)  
-  - `answer(question, candidates, top_k)`：对每个候选轨迹调用一次 Qwen2‑VL，让模型判断“像不像题目描述的人”。  
-  - 内部步骤（简版）：
-    1. 从每个 `EvidencePackage` 中选 3 张裁剪图（清晰度优先）；  
-    2. 拼出一个包含问题 + 运动特征的小 prompt；  
-    3. 通过 `transformers` + `qwen_vl_utils` 调用模型；  
-    4. 解析输出为 `QueryResult(track_id, start_s, end_s, score, reason)`。
+- `QueryResult` (`src/core/vlm_types.py`)  
+  - VLM 在某个问题下对单条轨迹的判断结果：`track_id, start_s, end_s, score, reason`。
 
-- `VideoSemanticSystem` (`src/video_semantic_search.py`)  
+- `Qwen3VL4BHFClient` (`src/pipeline/vlm_client_hf.py`)  
+  - 使用 transformers 直接加载 `Qwen/Qwen3-VL-4B-Instruct`，在 Verifier 阶段对候选轨迹做 Yes/No 判定并返回 `QueryResult` 列表（未来可替换为 llama-cpp GGUF）。
+
+- `VideoSemanticSystem` (`src/pipeline/video_semantic_search.py`)  
   - `build_index()`：Phase 0 的 orchestrator + 构建 `evidence_map`。  
   - `question_search(question, top_k=5, recall_limit=None)`：
-    1. 调用 `RecallEngine.recall` 选出候选轨迹集合；  
-    2. 把这些候选交给 `QwenVLMClient.answer`；  
-    3. 按 score 排序，取前 `top_k`；  
-    4. 打印结果 + 调 `render_highlight_video` 生成 `tracking_<safe_question>.mp4`。
+    1. 调用 Router 生成 ExecutionPlan；  
+    2. 用 `RecallEngine.visual_filter` 进行 SigLIP 粗筛；  
+    3. 用 Hard Rule Engine 在 Atomic 8 空间做几何过滤与排序；  
+    4. 将剩余候选交给 Qwen3‑VL‑4B（GGUF）做终审，并按 score 排序，取前 `top_k`；  
+    5. 打印结果 + 调 `render_highlight_video` 生成 `tracking_<safe_question>.mp4`。
 
 **单独测试入口**
 
@@ -124,13 +121,13 @@
 
 **新组件与文件**
 
-- `BehaviorFeatureExtractor` (`src/behavior.py`)  
+- `BehaviorFeatureExtractor` (`src/core/behavior.py`)  
   - `compute_roi_dwell(tracks)`：  
     - 基于 `SystemConfig.roi_zones` 中定义的矩形区域（如门口、收银台），统计每条轨迹在各 ROI 内停留的时间（秒）；  
     - 输出 `Dict[int, List[RoiDwell]]`，每个 `RoiDwell` 记录 ROI 名称和停留时间。  
   - 这些输出以后可以直接支持 v6 里的 `spatial_op="stay"` 等规则。
 
-- `EventDetector` (`src/behavior.py`)  
+- `EventDetector` (`src/core/behavior.py`)  
   - `detect_follow_events(tracks)`：  
     - 对所有轨迹对 (i, j) 计算在重叠时间段内的中心点距离；  
     - 按 `follow_distance_thresh` + `follow_min_frames` 找出“持续靠得很近”的片段；  
@@ -166,11 +163,11 @@
 
 目标：在不破坏现有逻辑和测试的前提下，让代码里的 `TrackFeatures` / `EvidencePackage` 渐进式靠近 v6 中的“Atomic 8 + EvidencePackage” 协议。
 
-- 在 `src/features.py` 中扩展 `TrackFeatures`：
+- 在 `src/core/features.py` 中扩展 `TrackFeatures`：
   - 增加时间与空间字段：`start_s, end_s, centroids, displacement_vec`；
   - 全部从现有 `TrackRecord.frames + bboxes + VideoMetadata.fps` 推导出来；
   - 保留原有字段 `duration_s, path_length_px, avg_speed_px_s, max_speed_px_s`，不删不改。
-- 在 `src/evidence.py` 中扩展 `EvidencePackage`：
+- 在 `src/core/evidence.py` 中扩展 `EvidencePackage`：
   - 增加 `meta: {video_id, fps, resolution}`；
   - 增加 `raw_trace`（等价于现在的 `bboxes`，先做别名即可）；
   - 增加 `embedding` 字段，初期固定为 `None`，等接入 SigLIP 后再真正写入向量；
@@ -184,7 +181,7 @@
 
 目标：复用现有 `BehaviorFeatureExtractor` / `EventDetector`，对上抽象成 v6 里的 Hard Rule Engine 接口，而不是堆在业务代码里。
 
-- 新增模块：`src/hard_rules.py`，提供统一入口：
+- 新增模块：`src/core/hard_rules.py`，提供统一入口：
 
   ```python
   def apply_hard_rules(
@@ -213,7 +210,7 @@
 
 目标：在不引入新模型的前提下，把现有 `RecallEngine` 的接口调整为 v6 设计的 `visual_filter` 风格，方便以后直接塞 SigLIP。
 
-- 在 `src/recall.py` 中：
+- 在 `src/pipeline/recall.py` 中：
   - 保留当前的 `RecallEngine.recall(question, evidence_map, limit)` 以兼容旧代码；
   - 新增一个更通用的函数/方法：
 
@@ -252,7 +249,7 @@
     ```
 
   - 同时实现 `parse_router_output(raw_output: str) -> Tuple[ExecutionPlan, str]` 的空壳/伪实现，用于未来接 Thinking 模型。
-- 在 `video_semantic_search.py` 中，逐步将“解析用户问题”的逻辑迁移到 Router：
+- 在 `src/pipeline/video_semantic_search.py` 中，逐步将“解析用户问题”的逻辑迁移到 Router：
   - 当前可以在 `question_search` 里直接调用 `build_execution_plan(question)`；
   - 对于简单场景（“找穿红衣服的人”、“最后一个进店的人”），手写规则即可覆盖。
 
@@ -264,7 +261,7 @@
 
 短期可以在文档层面定几个约束（代码逐步靠拢）：
 
-- 所有与“存储/缓存”相关的逻辑集中在一个薄层里（例如将来新增 `storage.py` / `index_store.py`），而不是散落在 `video_semantic_search.py` 中；
+- 所有与“存储/缓存”相关的逻辑集中在一个薄层里（例如将来新增 `storage.py` / `index_store.py`），而不是散落在 `src/pipeline/video_semantic_search.py` 中；
 - live 视频入口只负责把连续帧切成“片段 + TrackRecord 流”，对下游暴露的仍然是同一个 `Dict[int, TrackRecord] + VideoMetadata` 接口；
 - 将来引入 Redis / 向量库时：
   - 只是在 Recall/Router/HardRules 层面增加“从远程索引/缓存拿 EvidencePackage/embedding”的路径；

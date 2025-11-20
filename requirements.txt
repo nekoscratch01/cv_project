@@ -21,3 +21,4 @@ boxmot>=10.0.0              # ByteTrack等跟踪算法
 
 # 语义查询（Stage 4）
 transformers>=4.37.0        # CLIP等预训练模型
+huggingface_hub>=0.23.0     # 自动下载 HF 模型资产

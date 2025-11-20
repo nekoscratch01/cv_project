@@ -7,9 +7,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from behavior import BehaviorFeatureExtractor, EventDetector  # noqa: E402
-from config import SystemConfig  # noqa: E402
-from perception import TrackRecord, VideoMetadata  # noqa: E402
+from core.behavior import BehaviorFeatureExtractor, EventDetector  # noqa: E402
+from core.config import SystemConfig  # noqa: E402
+from core.perception import TrackRecord, VideoMetadata  # noqa: E402
 
 
 def _simple_track(track_id: int, frames, bboxes) -> TrackRecord:

@@ -1,39 +1,55 @@
-# 🚀 智能行人分析系统
+# 🚀 Edge‑Detective v7（M4 实施版）
 
-基于深度学习的视频分析系统，实现行人检测、跟踪、统计和语义查询。
-
----
-
-## 📌 项目特点
-
-- ✅ **完整Pipeline**：从视频输入到智能查询的端到端系统
-- ✅ **前沿技术**：集成YOLOv8、ByteTrack、CLIP、VLM等前沿算法
-- ✅ **M4优化**：针对Apple Silicon进行MPS加速优化
-- ✅ **模块化设计**：每个阶段独立运行，便于调试和扩展
+基于 YOLO + ByteTrack + Atomic 8 + 单 Qwen3‑VL‑4B VLM + SigLIP 的视频行人语义检索系统。  
+支持在本地 Mac M 系列（特别是 M4 16GB）上，按自然语言问题在视频中“找人/找行为”。
 
 ---
 
-## 🎯 四大核心功能
+## 📌 项目特点（v7 架构）
 
-### Stage 1: 目标检测
-- **技术**：YOLOv8
-- **功能**：识别视频中的每个行人
-- **输出**：边界框、置信度、检测结果CSV
+- ✅ **真正 v7**：单个 Qwen3‑VL‑4B‑Instruct‑GGUF（Int4）同时担任 Router + Verifier。  
+- ✅ **SigLIP 召回**：`google/siglip-base-patch16-224` 做高召回粗筛，减少 VLM 压力。  
+- ✅ **Atomic 8 协议**：所有行为判断都建立在几何“原子事实”之上（时间、速度、位移、轨迹等）。  
+- ✅ **四层流水线**：Router → Recall → Hard Rules → Verifier，清晰解耦。  
+- ✅ **自动下模型**：使用 `huggingface_hub` 自动下载 `unsloth/Qwen3-VL-4B-Instruct-GGUF`，无需手动找链接。
 
-### Stage 2: 多目标跟踪  
-- **技术**：YOLOv8 + ByteTrack
-- **功能**：为每个人分配唯一ID并追踪移动
-- **输出**：轨迹文件（MOT格式）、带ID的可视化视频
+---
 
-### Stage 3: 越线统计
-- **技术**：几何算法（叉积）+ 状态机
-- **功能**：统计穿过指定区域的人数
-- **输出**：统计视频、JSON数据
+## 🧱 核心流水线（v7）
 
-### Stage 4: 语义查询
-- **技术**：CLIP（快速）+ VLM（准确）
-- **功能**：用自然语言查询特定行人
-- **输出**：匹配结果、可视化图片
+1. **Perception（感知）**  
+   - 技术：YOLOv11（人检测）+ ByteTrack（多目标跟踪）。  
+   - 输出：`TrackRecord` + `VideoMetadata`（`src/core/perception.py`）。
+
+2. **Features（几何特征 / Atomic 8）**  
+   - 技术：几何运算 + 轨迹插值。  
+   - 输出：`TrackFeatures`（带 `start_s/end_s/centroids/displacement_vec/avg_speed/...`），在 `src/core/features.py`。
+
+3. **Evidence（证据包）**  
+   - 技术：数据打包。  
+   - 输出：`EvidencePackage`（轨迹 + Atomic 8 + crops/meta/raw_trace/embedding），在 `src/core/evidence.py`。
+
+4. **Router（规划层）**  
+   - 默认：`HFRouter` 直接使用 `Qwen/Qwen3-VL-4B-Instruct`（transformers）解析自然语言问题 → `ExecutionPlan`（`src/pipeline/router_llm.py`）；  
+   - 未来若需要 GGUF / llama-cpp，可在此接口上扩展，但当前实现已经完全由 VLM 端到端负责语义规划。
+
+5. **Recall（SigLIP 粗筛）**  
+   - 技术：`google/siglip-base-patch16-224` → 图文 embedding 相似度。  
+   - 输出：Top‑K 候选轨迹列表，`src/pipeline/recall.py`。
+
+6. **Hard Rules（几何会计师）**  
+   - 技术：在 Atomic 8 空间执行 ROI / 时间窗 / 排序 / 阈值等规则。  
+   - 输出：满足约束的少量轨迹，`src/core/hard_rules.py`。
+
+7. **Verifier（终审）**  
+   - 技术：同一个 Qwen3‑VL‑4B（transformers）模型，看多张 crops + Atomic 8 摘要，对每条轨迹做 Yes/No 判定并给出 reason。  
+   - 输出：`QueryResult(track_id, start_s, end_s, score, reason)` 列表，`src/pipeline/vlm_client_hf.py`。
+
+8. **VideoSemanticSystem（总 orchestrator）**  
+   - 入口：`src/pipeline/video_semantic_search.py`  
+   - API：  
+     - `build_index()`：跑 Perception + Features + Evidence，写出 `semantic_database.json`。  
+     - `question_search(question)`：跑 Router → Recall → Hard Rules → Verifier，并导出高亮视频。  
 
 ---
 
@@ -44,19 +60,18 @@
 - **内存**：16GB 推荐
 - **GPU**：可选（NVIDIA CUDA / Apple MPS）
 
-### 软件依赖
+### 软件依赖（v7）
 
 ```bash
 # 创建虚拟环境
 conda create -n mvsys-py311 python=3.11
 conda activate mvsys-py311
 
-# 安装基础依赖
+# 安装 v7 依赖
 pip install -r requirements.txt
-
-# （可选）安装VLM扩展
-pip install -r requirements_vlm.txt
 ```
+
+> 注意：首次运行需要从 Hugging Face 下载 Qwen3-VL-4B，确保网络通畅或提前配置镜像。
 
 ---
 
@@ -68,36 +83,32 @@ pip install -r requirements_vlm.txt
 cp your_video.mp4 data/snippets/debug_15s.mp4
 ```
 
-### 2. 运行完整流程
+### 2. 运行 v7 全流程（单视频 Demo）
 
-**Stage 1: 检测**
-```bash
-cd src
-python detect_v3_complete.py
-```
-输出：`detections.csv`, `output_video.mp4`
+1. 编辑 `src/core/config.py`（至少改两项）：  
+   ```python
+   video_path: Path = Path("data/snippets/debug_15s.mp4")  # 你的输入视频
+   output_dir: Path = Path("output")                       # 输出目录
 
-**Stage 2: 跟踪**
-```bash
-python track_v2_complete.py
-```
-输出：`tracks.txt`, `tracks_detail.csv`, `track_result.mp4`
+   vlm_backend: str = "hf"
+   router_backend: str = "hf"
+   ```
 
-**Stage 3: 统计**
-```bash
-python count_v1_complete.py
-```
-输出：`count_result.mp4`, `count_stats.json`
+2. 运行 demo（项目根目录）：  
+   ```bash
+   export PYTHONPATH=src  # Windows 使用 set PYTHONPATH=src
+   python -m pipeline.video_semantic_search
+   ```
 
-**Stage 4: 语义查询**
-```bash
-# 方式1：CLIP（快速）
-python semantic_search_complete.py
-
-# 方式2：VLM（准确）
-python semantic_vlm_vllm.py
-```
-输出：`output_semantic/` 目录下的查询结果
+   首次运行时：
+   - 会自动从 Hugging Face 下载：  
+     - `unsloth/Qwen3-VL-4B-Instruct-GGUF`（GGUF 文件，用于 Router + Verifier）  
+     - `google/siglip-base-patch16-224`（SigLIP 召回模型）  
+   - 会在 `output/` 下生成：  
+     - `semantic_database.json`（索引数据库）  
+     - `crops/`（轨迹裁剪图）  
+     - `embeddings/<video_id>/track_*.npy`（SigLIP embedding cache）  
+     - `tracking_找出穿紫色衣服的人.mp4`（高亮结果视频）
 
 ---
 
@@ -117,13 +128,22 @@ python semantic_vlm_vllm.py
 
 ```
 project/
-├── src/                          # 源代码
-│   ├── detect_v3_complete.py     # Stage 1: 检测
-│   ├── track_v2_complete.py      # Stage 2: 跟踪
-│   ├── count_v1_complete.py      # Stage 3: 统计
-│   ├── semantic_search_complete.py  # Stage 4: CLIP查询
-│   ├── semantic_vlm_vllm.py      # Stage 4: VLM查询
-│   └── learn_*.py                # 学习辅助脚本
+├── src/
+│   ├── core/                     # 协议 & 底层组件
+│   │   ├── config.py             # SystemConfig（视频路径、VLM GGUF、SigLIP 等）
+│   │   ├── perception.py         # YOLO + ByteTrack → TrackRecord, VideoMetadata
+│   │   ├── features.py           # TrackFeatures, TrackFeatureExtractor（Atomic 8）
+│   │   ├── evidence.py           # EvidencePackage, build_evidence_packages
+│   │   ├── behavior.py           # BehaviorFeatureExtractor, EventDetector
+│   │   ├── hard_rules.py         # HardRuleEngine
+│   │   ├── siglip_client.py      # SigLIP 封装
+│   │   └── vlm_types.py          # QueryResult
+│   └── pipeline/                 # 高层流水线（v7）
+│       ├── router.py             # ExecutionPlan schema + parse_router_output
+│       ├── router_llm.py         # HFRouter（Qwen3-VL-4B transformers 规划）
+│       ├── recall.py             # RecallEngine（SigLIP 粗筛）
+│       ├── vlm_client_hf.py      # Qwen3VL4BHFClient（Verifier）
+│       └── video_semantic_search.py  # VideoSemanticSystem（入口）
 │
 ├── data/                         # 数据目录
 │   └── snippets/                 # 测试视频
@@ -140,17 +160,17 @@ project/
 
 ---
 
-## 🎓 核心技术栈
+## 🎓 核心技术栈（v7）
 
 | 技术 | 版本 | 用途 |
 |------|------|------|
-| **YOLOv8** | 8.0+ | 目标检测 |
-| **ByteTrack** | - | 多目标跟踪 |
-| **OpenCV** | 4.8+ | 视频I/O、图像处理 |
-| **CLIP** | - | 图像-文本匹配 |
-| **Qwen2-VL** | 2B | 视觉语言理解 |
-| **PyTorch** | 2.0+ | 深度学习框架 |
-| **NumPy** | 1.24+ | 数值计算 |
+| **YOLOv11** (ultralytics) | - | 人体检测 |
+| **ByteTrack** (boxmot) | - | 多目标跟踪 |
+| **SigLIP** (`google/siglip-base-patch16-224`) | - | 视觉召回（图文 embedding） |
+| **Qwen3‑VL‑4B‑Instruct** (`Qwen/...`) | transformers (MPS/CPU) | Router + Verifier |
+| **PyTorch** | 2.0+ | YOLO / SigLIP 依赖 |
+| **OpenCV** | 4.8+ | 视频 I/O、画框 |
+| **NumPy** | 1.24+ | 几何计算 |
 
 ---
 
@@ -176,6 +196,12 @@ test_queries = [
 ---
 
 ## 🐛 故障排除
+
+### Q: Transformers 下载模型太慢？
+```bash
+export HF_ENDPOINT=https://hf-mirror.com  # 或者使用本地缓存
+pip install -U huggingface_hub
+```
 
 ### Q: ModuleNotFoundError
 ```bash
@@ -256,6 +282,3 @@ UW Computer Vision Project
 ---
 
 **🎯 一个完整的、可扩展的、前沿的视频分析系统！**
-
-
-
