@@ -19,8 +19,8 @@ class SystemConfig:
     tracker_type: str = "bytetrack"
 
     # Sampling
-    sample_interval: int = 30
-    min_track_length: int = 10
+    sample_interval: int = 2   # 更密集采样，避免漏掉最清晰帧
+    min_track_length: int = 1  # 放宽轨迹长度过滤，保留短轨迹
 
     # Semantic / VLM (v7 默认：单 Qwen3‑VL‑4B，经 transformers；保留 llama-cpp 接口)
     vlm_backend: str = "hf"  # 允许显式设为 "llama_cpp" 以备未来扩展
