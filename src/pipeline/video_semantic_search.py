@@ -264,7 +264,9 @@ class VideoSemanticSystem:
 
         # Step 1: 召回阶段（筛选候选）
         all_tracks = list(self.evidence_map.values())
-        recall_top_k = recall_limit or plan.constraints.get("limit") or len(all_tracks)
+        # 放宽召回：默认看全量，避免目标被 limit 过滤掉
+        recall_top_k = recall_limit or len(all_tracks)
+        plan.constraints["limit"] = len(all_tracks)
         candidates = self.recall_engine.visual_filter(
             all_tracks,
             description=plan.description,

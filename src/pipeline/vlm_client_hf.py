@@ -24,7 +24,7 @@ class Qwen3VL4BHFClient:
     """
 
     config: SystemConfig
-    max_crops: int = 3
+    max_crops: int = 5
 
     def __post_init__(self) -> None:
         try:

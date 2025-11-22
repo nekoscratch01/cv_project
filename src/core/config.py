@@ -15,7 +15,7 @@ class SystemConfig:
     # Detection / tracking
     yolo_model: str = "yolo11n.pt"  # upgrade to YOLOv11 weights
     yolo_conf: float = 0.3
-    yolo_device: str = "mps"
+    yolo_device: str = "cuda"
     tracker_type: str = "bytetrack"
 
     # Sampling
@@ -36,7 +36,7 @@ class SystemConfig:
     router_max_new_tokens: int = 256
     router_temperature: float = 0.2
     siglip_model_name: str = "google/siglip-base-patch16-224"
-    siglip_device: str = "mps"
+    siglip_device: str = "cuda"
     embedding_cache_dir: Path = Path("output/embeddings")
 
     # Visualization
