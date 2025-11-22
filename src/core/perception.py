@@ -47,13 +47,14 @@ class VideoPerception:
     def __init__(self, config: SystemConfig) -> None:
         self.config = config
         self.yolo = YOLO(config.yolo_model)
+        # 允许多类别跟踪，后续下游可按类别过滤
         self.tracker = create_tracker(
             tracker_type=config.tracker_type,
             tracker_config=None,
             reid_weights=None,
             device="cpu",
             half=False,
-            per_class=False,
+            per_class=True,
         )
 
     def process(self) -> tuple[Dict[int, TrackRecord], VideoMetadata]:
@@ -79,7 +80,7 @@ class VideoPerception:
                 device=self.config.yolo_device,
                 conf=self.config.yolo_conf,
                 verbose=False,
-                classes=[0],  # 0 代表 Person (人)。YOLO 默认在 COCO 数据集训练，class 0 是人。
+                classes=None,  # None = 检测所有类别；如需限定请在 config 中调整
             )[0]  # predict 返回一个 list，针对单张图片我们只取第 0 个结果
 
             # --- 详细注释：YOLO 返回的 results 数据结构 (JSON 格式展示) ---

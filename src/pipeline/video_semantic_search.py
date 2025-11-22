@@ -298,17 +298,22 @@ class VideoSemanticSystem:
                 f"      - Track {item.track_id}: {item.start_s:.1f}s → {item.end_s:.1f}s | 理由: {item.reason}"
             )
 
-        # 汇总一句话回答：聚合最高分的若干结果给用户
-        if selected:
-            summary_parts = []
-            for item in selected:
-                summary_parts.append(
-                    f"轨迹 {item.track_id}（{item.start_s:.1f}s–{item.end_s:.1f}s）"
+        # 汇总一句话回答：用同一 4B VLM 生成最终答复
+        final_answer = ""
+        if hasattr(self.vlm_client, "compose_final_answer"):
+            try:
+                final_answer = self.vlm_client.compose_final_answer(question, selected)  # type: ignore
+            except Exception as exc:  # noqa: BLE001
+                print(f"   ⚠️  汇总回答失败: {exc}")
+        if not final_answer:
+            if selected:
+                summary_text = "，".join(
+                    f"轨迹{item.track_id}（{item.start_s:.1f}s–{item.end_s:.1f}s）" for item in selected
                 )
-            summary_text = "，".join(summary_parts)
-            print(f"\n📝 汇总回答：根据候选轨迹，最可能匹配的是：{summary_text}。")
-        else:
-            print("\n📝 汇总回答：未找到匹配轨迹。")
+                final_answer = f"最可能匹配：{summary_text}。"
+            else:
+                final_answer = "未找到匹配轨迹。"
+        print(f"\n📝 汇总回答：{final_answer}")
 
         # Step 4: 可视化（画红框视频）
         track_ids = [item.track_id for item in selected]

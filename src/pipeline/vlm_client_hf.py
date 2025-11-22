@@ -48,6 +48,65 @@ class Qwen3VL4BHFClient:
         self.temperature = self.config.vlm_temperature
         self.max_new_tokens = self.config.vlm_max_new_tokens
 
+    def compose_final_answer(self, question: str, results: List[QueryResult]) -> str:
+        """
+        用同一个 4B VLM 对筛选后的轨迹做一次总回答，直接返回给用户。
+        """
+        if not results:
+            return "未找到匹配轨迹。"
+
+        summary_lines = []
+        for item in results:
+            summary_lines.append(
+                f"- track {item.track_id}: {item.start_s:.1f}s–{item.end_s:.1f}s | reason: {item.reason}"
+            )
+        summary = "\n".join(summary_lines)
+
+        messages = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "You are an assistant summarizing video retrieval results. "
+                            "Given the original question and the shortlisted tracks with reasons, "
+                            "provide a concise final answer in Chinese that tells the user which tracks match. "
+                            "If none, say no match."
+                        ),
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Question: {question}\nShortlisted:\n{summary}"},
+                ],
+            },
+        ]
+
+        inputs = self.processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self.model.device)
+        with self._torch.no_grad():
+            generated = self.model.generate(
+                **inputs,
+                max_new_tokens=128,
+                temperature=self.temperature,
+            )
+        trimmed = [
+            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated)
+        ]
+        answers = self.processor.batch_decode(
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+        return answers[0] if answers else ""
+
     def answer(
         self,
         question: str,
