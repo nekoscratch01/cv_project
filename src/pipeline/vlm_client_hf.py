@@ -55,11 +55,10 @@ class Qwen3VL4BHFClient:
         if not results:
             return "未找到匹配轨迹。"
 
-        summary_lines = []
-        for item in results:
-            summary_lines.append(
-                f"- track {item.track_id}: {item.start_s:.1f}s–{item.end_s:.1f}s | reason: {item.reason}"
-            )
+        summary_lines = [
+            f"- {item.start_s:.1f}s–{item.end_s:.1f}s：{item.reason}"
+            for item in results
+        ]
         summary = "\n".join(summary_lines)
 
         messages = [

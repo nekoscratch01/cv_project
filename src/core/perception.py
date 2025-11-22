@@ -47,14 +47,14 @@ class VideoPerception:
     def __init__(self, config: SystemConfig) -> None:
         self.config = config
         self.yolo = YOLO(config.yolo_model)
-        # 允许多类别跟踪，后续下游可按类别过滤
+        # 仅做人，单类别跟踪
         self.tracker = create_tracker(
             tracker_type=config.tracker_type,
             tracker_config=None,
             reid_weights=None,
             device="cpu",
             half=False,
-            per_class=True,
+            per_class=False,
         )
 
     def process(self) -> tuple[Dict[int, TrackRecord], VideoMetadata]:
