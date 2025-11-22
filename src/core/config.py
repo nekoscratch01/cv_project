@@ -9,7 +9,7 @@ class SystemConfig:
     """Runtime configuration shared across pipeline modules."""
 
     # I/O
-    video_path: Path = Path("/Users/neko_wen/my/代码/uw/cv/project/data/raw/core/MOT17-09.mp4")
+    video_path: Path = Path("data/raw/core/MOT17-09.mp4")
     output_dir: Path = Path("output")
 
     # Detection / tracking

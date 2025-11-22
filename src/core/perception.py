@@ -80,7 +80,7 @@ class VideoPerception:
                 device=self.config.yolo_device,
                 conf=self.config.yolo_conf,
                 verbose=False,
-                classes=None,  # None = 检测所有类别；如需限定请在 config 中调整
+                classes=[0],  # 仅检测 person 类
             )[0]  # predict 返回一个 list，针对单张图片我们只取第 0 个结果
 
             # --- 详细注释：YOLO 返回的 results 数据结构 (JSON 格式展示) ---
