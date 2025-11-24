@@ -13,6 +13,8 @@ from pipeline.recall import RecallEngine
 from core.hard_rules import HardRuleEngine
 from typing import Any
 
+VERSION = "v1.24"
+
 
 class VideoSemanticSystem:
     """
@@ -256,6 +258,7 @@ class VideoSemanticSystem:
         if self.evidence_map is None:
             raise RuntimeError("请先运行 build_index()")
 
+        print(f"\n=== Version: {VERSION} ===")
         print("\n=== 查询: 问题驱动检索 ===")
         print(f"描述: {question}")
 
