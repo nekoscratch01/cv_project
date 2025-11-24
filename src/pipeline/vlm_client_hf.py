@@ -4,14 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
+import numpy as np
 from PIL import Image
 
 from core.config import SystemConfig
 from core.evidence import EvidencePackage
 from core.vlm_types import QueryResult
 from pipeline.router import ExecutionPlan, DEFAULT_VERIFICATION_PROMPT
+
+try:
+    import cv2  # type: ignore
+except Exception:
+    cv2 = None
 
 
 @dataclass
@@ -25,6 +31,8 @@ class Qwen3VL4BHFClient:
 
     config: SystemConfig
     max_crops: int = 5
+    minimap_size: Tuple[int, int] = (336, 336)
+    minimap_time_step_s: float = 0.5
 
     def __post_init__(self) -> None:
         try:
@@ -144,27 +152,37 @@ class Qwen3VL4BHFClient:
         question: str,
         plan: ExecutionPlan | None,
     ) -> str:
-        limited_crops = package.crops[: self.max_crops]
+        limited_crops = self._sample_crops(package.crops)
         if not limited_crops:
             return ""
 
-        motion_context = ""
-        if package.motion:
-            motion_context = (
-                f" avg_speed={package.motion.avg_speed_px_s:.2f}px/s,"
-                f" duration={package.motion.duration_s:.1f}s"
-            )
+        minimap_img = self._render_minimap(package)
+        motion_context = self._build_motion_narrative(package)
         plan_context = self._build_plan_context(plan)
         verification_prompt = (
             plan.verification_prompt if plan and plan.verification_prompt else DEFAULT_VERIFICATION_PROMPT
         )
 
+        appearance_count = len(limited_crops)
+        minimap_index = appearance_count + 1 if minimap_img else None
         prompt = (
             "You are a video analysis assistant.\n"
             f"Original question: {question}\n"
             f"{verification_prompt}\n"
             f"Planner summary:\n{plan_context}\n"
-            f"Additional numeric context:{motion_context if motion_context else ' none.'}"
+            f"Motion/position summary: {motion_context if motion_context else 'unknown.'}\n"
+        )
+        if minimap_index:
+            prompt += (
+                f"Images 1-{appearance_count} show the person's appearance.\n"
+                f"Image {minimap_index} is a motion plot: gray line=path, colored dots every "
+                f"{self.minimap_time_step_s:.1f}s (green=start, red=end); sparse dots=fast, dense dots=slow/stationary; "
+                "dots overlapping = stopped.\n"
+            )
+        prompt += (
+            "Step 1: describe briefly what you see. "
+            "Step 2: decide if it matches the original question and planner constraints. "
+            "Respond strictly in JSON with keys thinking, match (yes/no), reason."
         )
 
         # 构造 Qwen3-VL 聊天消息（本地 PIL 图像 + 文本）
@@ -172,6 +190,8 @@ class Qwen3VL4BHFClient:
         for crop in limited_crops:
             img = Image.open(Path(crop)).convert("RGB")
             user_content.append({"type": "image", "image": img})
+        if minimap_img is not None:
+            user_content.append({"type": "image", "image": minimap_img})
         user_content.append({"type": "text", "text": prompt})
 
         messages = [
@@ -266,3 +286,102 @@ class Qwen3VL4BHFClient:
                 parts.append(f"{key}={value}")
             lines.append(f"- constraints: {'; '.join(parts)}")
         return "\n".join(lines)
+
+    def _sample_crops(self, crops: List[str]) -> List[str]:
+        """均匀采样轨迹裁剪，避免只看到前几帧的低质量画面。"""
+        if not crops:
+            return []
+        if len(crops) <= self.max_crops:
+            return list(crops)
+        indices = np.linspace(0, len(crops) - 1, self.max_crops, dtype=int)
+        return [crops[i] for i in indices]
+
+    def _build_motion_narrative(self, package: EvidencePackage) -> str:
+        feats = package.features
+        if not feats:
+            return "No motion data."
+
+        # 基于画面宽度做速度归一化，转成模型易懂的标签
+        width = 1920
+        if package.meta and package.meta.get("resolution"):
+            width = max(int(package.meta["resolution"][0] or 1920), 1)
+
+        norm_speed = feats.avg_speed_px_s / float(width)
+        if norm_speed < 0.02:
+            speed_desc = "standing still or barely moving"
+        elif norm_speed < 0.10:
+            speed_desc = "walking at normal pace"
+        elif norm_speed < 0.25:
+            speed_desc = "moving fast or running"
+        else:
+            speed_desc = "sprinting or moving very fast"
+
+        dir_desc = ""
+        dx, dy = feats.displacement_vec
+        if feats.path_length_px > 10.0:
+            if abs(dx) >= abs(dy):
+                dir_desc = "moving right" if dx > 0 else "moving left"
+            else:
+                dir_desc = "moving down (towards camera)" if dy > 0 else "moving up (away)"
+
+        pos_desc = ""
+        if feats.centroids:
+            start_side = self._side_from_ratio(feats.centroids[0][0])
+            end_side = self._side_from_ratio(feats.centroids[-1][0])
+            pos_desc = f"start at {start_side}, end at {end_side}"
+
+        parts = [f"Speed: {speed_desc}."]
+        if dir_desc:
+            parts.append(f"Direction: {dir_desc}.")
+        if pos_desc:
+            parts.append(f"Position: {pos_desc}.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _side_from_ratio(x_ratio: float) -> str:
+        if x_ratio < 0.33:
+            return "left side"
+        if x_ratio > 0.66:
+            return "right side"
+        return "center"
+
+    def _render_minimap(self, package: EvidencePackage) -> Image.Image | None:
+        """生成速度感知的轨迹小地图，辅助 VLM 理解动作/方向。"""
+        if cv2 is None:
+            return None
+        feats = package.features
+        if not feats or not feats.centroids:
+            return None
+
+        canvas_w, canvas_h = self.minimap_size
+        canvas = np.ones((canvas_h, canvas_w, 3), dtype=np.uint8) * 255
+        points = [
+            (int(cx * (canvas_w - 1)), int(cy * (canvas_h - 1)))
+            for cx, cy in feats.centroids
+        ]
+
+        if len(points) >= 2:
+            cv2.polylines(
+                canvas,
+                [np.array(points)],
+                isClosed=False,
+                color=(200, 200, 200),
+                thickness=2,
+                lineType=cv2.LINE_AA,
+            )
+
+        fps = max(package.fps, 1e-3)
+        step = max(int(fps * self.minimap_time_step_s), 1)
+        for idx in range(0, len(points), step):
+            pt = points[idx]
+            progress = idx / max(len(points) - 1, 1)
+            color = (0, int(255 * (1 - progress)), int(255 * progress))  # BGR: green->red
+            cv2.circle(canvas, pt, radius=4, color=color, thickness=-1)
+
+        if len(points) >= 1:
+            cv2.circle(canvas, points[0], 6, (0, 200, 0), 2)  # start marker
+        if len(points) >= 2:
+            cv2.arrowedLine(canvas, points[-2], points[-1], (0, 0, 255), 3, tipLength=0.3)
+
+        rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb)

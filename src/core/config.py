@@ -14,22 +14,22 @@ class SystemConfig:
 
     # Detection / tracking
     yolo_model: str = "yolo11n.pt"  # upgrade to YOLOv11 weights
-    yolo_conf: float = 0.3
+    yolo_conf: float = 0.5
     yolo_device: str = "cuda"
     tracker_type: str = "bytetrack"
 
     # Sampling
-    sample_interval: int = 2   # 更密集采样，避免漏掉最清晰帧
-    min_track_length: int = 1  # 放宽轨迹长度过滤，保留短轨迹
+    sample_interval: int = 5   # 更稀疏存图，聚焦关键帧
+    min_track_length: int = 15  # 过滤闪烁短轨迹
 
     # Semantic / VLM (v7 默认：单 Qwen3‑VL‑4B，经 transformers；保留 llama-cpp 接口)
     vlm_backend: str = "hf"  # 允许显式设为 "llama_cpp" 以备未来扩展
     vlm_gguf_path: Path | None = None
-    vlm_context_size: int = 4096
+    vlm_context_size: int = 8192
     vlm_gpu_layers: int = -1
     vlm_cpu_threads: int | None = None
     vlm_temperature: float = 0.1
-    vlm_max_new_tokens: int = 512
+    vlm_max_new_tokens: int = 1024
     # Router 默认也使用同一个 4B 模型；当前实现仅提供 transformers 版本
     router_backend: str = "hf"  # 允许保留 "llama_cpp" 占位
     router_gguf_path: Path | None = None
@@ -41,7 +41,7 @@ class SystemConfig:
 
     # Visualization
     highlight_color: tuple[int, int, int] = (0, 0, 255)
-    max_preview_tracks: int = 5
+    max_preview_tracks: int = 10
 
     # Behavior / ROI (Phase 2 hooks)
     # 定义 ROI 区域用于停留时间等行为分析，格式: [(name, (x1,y1,x2,y2)), ...]
