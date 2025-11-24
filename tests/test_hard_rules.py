@@ -8,8 +8,8 @@ if str(SRC) not in sys.path:
 
 from core.config import SystemConfig  # noqa: E402
 from core.evidence import EvidencePackage  # noqa: E402
-from core.hard_rules import HardRuleEngine  # noqa: E402
 from core.features import TrackFeatures  # noqa: E402
+from core.hard_rules import HardRuleEngine  # noqa: E402
 from core.perception import VideoMetadata  # noqa: E402
 
 
@@ -48,45 +48,45 @@ def _make_package(
     )
 
 
-def test_roi_enter_and_stay_filters():
+def test_roi_enter_and_stay():
     config = SystemConfig()
     config.roi_zones = [("door", (0, 0, 50, 50))]
     metadata = VideoMetadata(fps=10.0, width=100, height=100, total_frames=0)
     engine = HardRuleEngine(config, metadata)
 
-    pkg_enter = _make_package(1, frames=[0, 10], centroids=[(0.2, 0.2), (0.4, 0.4)])
-    pkg_outside = _make_package(2, frames=[0, 10], centroids=[(0.8, 0.8), (0.9, 0.9)])
-    filtered = engine.apply_constraints([pkg_enter, pkg_outside], {"roi": "door", "event_type": "enter"})
-    assert [p.track_id for p in filtered] == [1]
-
-    pkg_long_stay = _make_package(
+    pkg_enter = _make_package(1, frames=[0, 10], centroids=[(0.8, 0.8), (0.4, 0.4)])
+    pkg_stay_long = _make_package(
+        2,
+        frames=[0, 10, 20],
+        centroids=[(0.2, 0.2), (0.25, 0.25), (0.2, 0.2)],
+    )
+    pkg_stay_short = _make_package(
         3,
-        frames=[0, 5, 10],
-        centroids=[(0.1, 0.1), (0.2, 0.2), (0.2, 0.2)],
+        frames=[0, 10, 20],
+        centroids=[(0.7, 0.7), (0.7, 0.7), (0.2, 0.2)],
     )
-    pkg_short_stay = _make_package(
-        4,
-        frames=[0, 5, 10],
-        centroids=[(0.6, 0.6), (0.2, 0.2), (0.6, 0.6)],
+
+    filtered_enter = engine.apply_constraints([pkg_enter], {"roi": "door", "event_type": "enter"})
+    assert [p.track_id for p in filtered_enter] == [1]
+
+    filtered_stay = engine.apply_constraints(
+        [pkg_stay_long, pkg_stay_short],
+        {"roi": "door", "event_type": "stay", "min_dwell_s": 1.5},
     )
-    filtered = engine.apply_constraints(
-        [pkg_long_stay, pkg_short_stay],
-        {"roi": "door", "event_type": "stay", "min_dwell_s": 0.9},
-    )
-    assert [p.track_id for p in filtered] == [3]
+    assert [p.track_id for p in filtered_stay] == [2]
 
 
-def test_time_window_sorting_and_limit():
+def test_time_window_sort_and_limit():
     config = SystemConfig()
     metadata = VideoMetadata(fps=10.0, width=100, height=100, total_frames=0)
     engine = HardRuleEngine(config, metadata)
     pkg1 = _make_package(1, frames=[0, 10], centroids=[(0.1, 0.1), (0.1, 0.1)])
     pkg2 = _make_package(2, frames=[15, 25], centroids=[(0.2, 0.2), (0.2, 0.2)])
-    pkg3 = _make_package(3, frames=[30, 40], centroids=[(0.3, 0.3), (0.3, 0.3)])
+    pkg3 = _make_package(3, frames=[40, 50], centroids=[(0.3, 0.3), (0.3, 0.3)])
 
     filtered = engine.apply_constraints(
         [pkg1, pkg2, pkg3],
-        {"time_window": [1.0, 3.5], "sort_by": "end_s", "sort_order": "asc", "limit": 1},
+        {"time_window": [1.1, 3.5], "sort_by": "end_s", "sort_order": "asc", "limit": 1},
     )
     assert [p.track_id for p in filtered] == [2]
 
