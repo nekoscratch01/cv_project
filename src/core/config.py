@@ -9,7 +9,7 @@ class SystemConfig:
     """Runtime configuration shared across pipeline modules."""
 
     # I/O
-    video_path: Path = Path("data/raw/core/MOT17-09.mp4")
+    video_path: Path = Path(__file__).resolve().parents[2] / "data/raw/core/MOT17-09.mp4"
     output_dir: Path = Path("output")
 
     # Detection / tracking
@@ -54,6 +54,10 @@ class SystemConfig:
     crops_dir: Path = field(init=False)
 
     def __post_init__(self) -> None:
+        # 允许从任意工作目录运行：相对路径统一相对项目根目录解析
+        if not self.video_path.is_absolute():
+            project_root = Path(__file__).resolve().parents[2]
+            self.video_path = (project_root / self.video_path).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.crops_dir = self.output_dir / "crops"
         self.crops_dir.mkdir(parents=True, exist_ok=True)

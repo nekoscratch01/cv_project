@@ -241,12 +241,20 @@ class Qwen3VL4BHFClient:
 
         if not match_flag:
             lowered = answer.lower()
-            if "match" in lowered:
-                match_flag = "match" in lowered and "no" not in lowered.split("match")[-1][:6]
-            else:
-                if "yes" in lowered:
-                    idx = lowered.find("yes")
-                    match_flag = "no" not in lowered[:idx]
+            negative = (
+                "not match" in lowered
+                or "no match" in lowered
+                or "does not" in lowered
+                or "not a plausible" in lowered
+                or "not " in lowered
+                or " no " in lowered
+            )
+            if negative:
+                match_flag = False
+            elif "yes" in lowered:
+                match_flag = True
+            elif "match" in lowered and "not" not in lowered and "no" not in lowered:
+                match_flag = True
 
         if match_flag:
             score = 1.0

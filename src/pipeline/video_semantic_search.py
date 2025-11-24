@@ -321,6 +321,7 @@ class VideoSemanticSystem:
         track_ids = [item.track_id for item in selected]
         safe_name = question.replace(" ", "_")  # 空格替换成下划线
         video_output = self.config.output_dir / f"tracking_{safe_name}.mp4"
+        # 渲染最终匹配
         self.perception.render_highlight_video(
             self.track_records,
             self.metadata,
@@ -328,6 +329,19 @@ class VideoSemanticSystem:
             video_output,
             label_text=question,
         )
+
+        # 额外输出：全量轨迹调试视频，便于比对
+        all_track_ids = list(self.track_records.keys())
+        debug_output = self.config.output_dir / f"tracking_all_tracks_{safe_name}.mp4"
+        self.perception.render_highlight_video(
+            self.track_records,
+            self.metadata,
+            all_track_ids,
+            debug_output,
+            label_text="all tracks",
+        )
+        print(f"   🎞️ 结果视频: {video_output}")
+        print(f"   🎞️ 全量轨迹: {debug_output}")
 
         return selected
 
