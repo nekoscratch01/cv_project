@@ -102,8 +102,13 @@
     1. 调用 Router 生成 ExecutionPlan；  
     2. 用 `RecallEngine.visual_filter` 进行 SigLIP 粗筛；  
     3. 用 Hard Rule Engine 在 Atomic 8 空间做几何过滤与排序；  
-    4. 将剩余候选交给 Qwen3‑VL‑4B（GGUF）做终审，并按 score 排序，取前 `top_k`；  
-    5. 打印结果 + 调 `render_highlight_video` 生成 `tracking_<safe_question>.mp4`。
+    4. 将剩余候选交给 Qwen3‑VL‑4B（transformers）做终审，并按 score 排序，取前 `top_k`；  
+    5. 打印结果 + 调 `render_highlight_video` 生成两个视频：结果视频（只框匹配轨迹）和全量轨迹视频（便于对比调试）。
+- VLM 提示与判定（v1.27 实际做法）：
+  - 均匀采样 crops + 小地图（轨迹打点图）输入；动作叙事层把速度/方向/左右位置翻译成人话。
+  - Prompt 不再强制 JSON，要求末行输出 `MATCH: yes/no`，解析仅看该行，避免小模型 JSON 格式不稳导致误判。
+- 方向/动作几何过滤（TODO，建议）：
+  - 在 Hard Rule Engine 增加 `direction` 约束（基于 displacement_vec 或首尾 x 差），先过滤明显反向/静止，再交给 VLM，减少“往右”误报。
 
 **单独测试入口**
 

@@ -13,7 +13,7 @@ from pipeline.recall import RecallEngine
 from core.hard_rules import HardRuleEngine
 from typing import Any
 
-VERSION = "v1.27"
+VERSION = "v1.28"
 
 
 class VideoSemanticSystem:

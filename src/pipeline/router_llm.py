@@ -110,6 +110,18 @@ def _build_router_prompt(user_query: str) -> str:
                 ),
             },
         },
+        {
+            "question": "找一个往左走的穿蓝色衣服的人",
+            "plan": {
+                "description": "a person wearing blue clothes moving left",
+                "visual_tags": ["blue clothes"],
+                "needed_facts": ["direction"],
+                "constraints": {"direction": "left", "limit": 50},
+                "verification_prompt": (
+                    "Given the original question, is this track a plausible match? Answer Yes or No."
+                ),
+            },
+        },
     ]
     examples = "\n".join(
         f"Question: {item['question']}\nPlan JSON:\n{json.dumps(item['plan'], ensure_ascii=False)}\n"
@@ -117,10 +129,11 @@ def _build_router_prompt(user_query: str) -> str:
     )
     template = dedent(
         """
-        Convert user questions into a JSON ExecutionPlan with keys:
-        description, visual_tags, needed_facts, constraints, verification_prompt.
-        Use only the defined keys. Examples:
-        {examples}
+Convert user questions into a JSON ExecutionPlan with keys:
+description, visual_tags, needed_facts, constraints, verification_prompt.
+If user mentions direction (left/right/up/down), set constraints.direction accordingly.
+Use only the defined keys. Examples:
+{examples}
 
         User query: {query}
         Respond ONLY with JSON.

@@ -38,6 +38,7 @@ class HardRuleEngine:
 
         filtered = self._apply_roi_constraints(filtered, constraints)
         filtered = self._apply_time_window(filtered, constraints)
+        filtered = self._apply_direction_filter(filtered, constraints)
         filtered = self._apply_thresholds(filtered, constraints)
         filtered = self._apply_sorting(filtered, constraints)
         limit = constraints.get("limit")
@@ -128,6 +129,38 @@ class HardRuleEngine:
                 continue
             delta = features.max_speed_px_s - features.avg_speed_px_s
             if delta + 1e-6 >= threshold:
+                result.append(pkg)
+        return result
+
+    def _apply_direction_filter(
+        self,
+        tracks: List[EvidencePackage],
+        constraints: Mapping[str, Any],
+        min_delta: float = 0.01,
+    ) -> List[EvidencePackage]:
+        """按主运动方向过滤：left/right/up/down，基于位移向量."""
+        direction = constraints.get("direction")
+        if not direction:
+            return tracks
+        direction = str(direction).lower()
+        allowed = {"left", "right", "up", "down"}
+        if direction not in allowed:
+            return tracks
+
+        result: List[EvidencePackage] = []
+        for pkg in tracks:
+            feats = pkg.features
+            if not feats:
+                continue
+            dx, dy = feats.displacement_vec
+            # 若位移很小，视为无方向
+            if abs(dx) < min_delta and abs(dy) < min_delta:
+                continue
+            if abs(dx) >= abs(dy):
+                actual = "right" if dx > 0 else "left"
+            else:
+                actual = "down" if dy > 0 else "up"
+            if actual == direction:
                 result.append(pkg)
         return result
 
