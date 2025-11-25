@@ -145,27 +145,37 @@ class Qwen3VL4BHFClient:
         question: str,
         plan: ExecutionPlan | None,
     ) -> str:
-        limited_crops = package.crops[: self.max_crops]
+        limited_crops = self._sample_crops(package.crops)
         if not limited_crops:
             return ""
 
-        motion_context = ""
-        if package.motion:
-            motion_context = (
-                f" avg_speed={package.motion.avg_speed_px_s:.2f}px/s,"
-                f" duration={package.motion.duration_s:.1f}s"
-            )
+        minimap_img = self._render_minimap(package)
+        motion_context = self._build_motion_narrative(package)
         plan_context = self._build_plan_context(plan)
         verification_prompt = (
             plan.verification_prompt if plan and plan.verification_prompt else DEFAULT_VERIFICATION_PROMPT
         )
 
+        appearance_count = len(limited_crops)
+        minimap_index = appearance_count + 1 if minimap_img else None
         prompt = (
             "You are a video analysis assistant.\n"
             f"Original question: {question}\n"
             f"{verification_prompt}\n"
             f"Planner summary:\n{plan_context}\n"
-            f"Additional numeric context:{motion_context if motion_context else ' none.'}"
+            f"Motion/position summary: {motion_context if motion_context else 'unknown.'}\n"
+        )
+        if minimap_index:
+            prompt += (
+                f"Images 1-{appearance_count} show the person's appearance.\n"
+                f"Image {minimap_index} is a motion plot: gray line=path, colored dots every "
+                f"{self.minimap_time_step_s:.1f}s (green=start, red=end); sparse dots=fast, dense dots=slow/stationary; "
+                "dots overlapping = stopped.\n"
+            )
+        prompt += (
+            "Step 1: describe briefly what you see. "
+            "Step 2: decide if it matches the original question and planner constraints. "
+            "End your answer with a single line: MATCH: yes or MATCH: no."
         )
 
         # 构造 Qwen3-VL 聊天消息（本地 PIL 图像 + 文本）
@@ -173,6 +183,8 @@ class Qwen3VL4BHFClient:
         for crop in limited_crops:
             img = Image.open(Path(crop)).convert("RGB")
             user_content.append({"type": "image", "image": img})
+        if minimap_img is not None:
+            user_content.append({"type": "image", "image": minimap_img})
         user_content.append({"type": "text", "text": prompt})
 
         messages = [
@@ -181,7 +193,7 @@ class Qwen3VL4BHFClient:
                 "content": [
                     {
                         "type": "text",
-                        "text": "You answer strictly in JSON with keys match (yes/no) and reason.",
+                        "text": "Answer in free text, but end with 'MATCH: yes' or 'MATCH: no'.",
                     }
                 ],
             },
@@ -221,26 +233,24 @@ class Qwen3VL4BHFClient:
         if not answer:
             return False, 0.0, ""
 
-        import json
         import re
 
         match_flag = False
         reason = answer
         score = 0.0
 
-        json_match = re.search(r"\{.*\}", answer, re.S)
-        if json_match:
-            candidate = json_match.group(0)
-            try:
-                payload = json.loads(candidate)
-                flag = str(payload.get("match", "")).lower()
-                match_flag = flag in {"yes", "true", "1", "是"}
-                reason = payload.get("reason", answer)
-            except json.JSONDecodeError:
-                pass
-
-        if not match_flag:
-            lowered = answer.lower()
+        lowered = answer.lower()
+        match_line = None
+        for line in lowered.splitlines():
+            if line.strip().startswith("match:"):
+                match_line = line.strip()
+                break
+        if match_line:
+            if "yes" in match_line and "no" not in match_line:
+                match_flag = True
+            else:
+                match_flag = False
+        else:
             negative = (
                 "not match" in lowered
                 or "no match" in lowered
@@ -251,9 +261,7 @@ class Qwen3VL4BHFClient:
             )
             if negative:
                 match_flag = False
-            elif "yes" in lowered:
-                match_flag = True
-            elif "match" in lowered and "not" not in lowered and "no" not in lowered:
+            elif "yes" in lowered and "no" not in lowered:
                 match_flag = True
 
         if match_flag:

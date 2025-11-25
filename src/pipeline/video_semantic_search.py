@@ -13,7 +13,7 @@ from pipeline.recall import RecallEngine
 from core.hard_rules import HardRuleEngine
 from typing import Any
 
-VERSION = "v1.25"
+VERSION = "v1.26"
 
 
 class VideoSemanticSystem:
@@ -492,7 +492,7 @@ def run_demo() -> None:
 
     # 执行演示查询
     print("\n=== Demo Queries ===")
-    system.question_search("找出穿紫色衣服的人", top_k=5)
+    system.question_search("找出往左边走的穿蓝色衣服的人，他是在跑还是走路？", top_k=5)
 
 
 if __name__ == "__main__":
