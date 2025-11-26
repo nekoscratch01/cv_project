@@ -136,9 +136,9 @@ class HardRuleEngine:
         self,
         tracks: List[EvidencePackage],
         constraints: Mapping[str, Any],
-        min_delta: float = 0.01,
+        min_step: float = 0.005,
     ) -> List[EvidencePackage]:
-        """按主运动方向过滤：left/right/up/down，基于位移向量."""
+        """按主运动方向过滤：left/right/up/down，基于轨迹分段投票的主方向."""
         direction = constraints.get("direction")
         if not direction:
             return tracks
@@ -150,16 +150,22 @@ class HardRuleEngine:
         result: List[EvidencePackage] = []
         for pkg in tracks:
             feats = pkg.features
-            if not feats:
+            if not feats or not feats.centroids or len(feats.centroids) < 2:
                 continue
-            dx, dy = feats.displacement_vec
-            # 若位移很小，视为无方向
-            if abs(dx) < min_delta and abs(dy) < min_delta:
+            votes = {"left": 0, "right": 0, "up": 0, "down": 0}
+            pts = feats.centroids
+            for i in range(1, len(pts)):
+                dx = pts[i][0] - pts[i - 1][0]
+                dy = pts[i][1] - pts[i - 1][1]
+                if abs(dx) < min_step and abs(dy) < min_step:
+                    continue
+                if abs(dx) >= abs(dy):
+                    votes["right" if dx > 0 else "left"] += 1
+                else:
+                    votes["down" if dy > 0 else "up"] += 1
+            if not any(votes.values()):
                 continue
-            if abs(dx) >= abs(dy):
-                actual = "right" if dx > 0 else "left"
-            else:
-                actual = "down" if dy > 0 else "up"
+            actual = max(votes.items(), key=lambda kv: kv[1])[0]
             if actual == direction:
                 result.append(pkg)
         return result

@@ -153,7 +153,7 @@ class Qwen3VL4BHFClient:
         question: str,
         plan: ExecutionPlan | None,
     ) -> str:
-        limited_crops = self._sample_crops(package.crops)
+        limited_crops = self._sample_crops(package)
         if not limited_crops:
             return ""
 
@@ -176,11 +176,13 @@ class Qwen3VL4BHFClient:
         if minimap_index:
             prompt += (
                 f"Images 1-{appearance_count} show the person's appearance.\n"
-                f"Image {minimap_index} is a motion plot: gray line=path, colored dots every "
-                f"{self.minimap_time_step_s:.1f}s (green=start, red=end); sparse dots=fast, dense dots=slow/stationary; "
-                "dots overlapping = stopped.\n"
+                f"Image {minimap_index} shows the same scene with the person's motion path overlaid on the frame "
+                f"(green=start, red=end, yellow path, dots every {self.minimap_time_step_s:.1f}s). "
+                "Trust the overlaid path for direction/position.\n"
             )
         prompt += (
+            "Facts (computed from trajectory, do NOT re-judge): "
+            f"{motion_context if motion_context else 'unknown'}\n"
             "Step 1: describe briefly what you see. "
             "Step 2: decide if it matches the original question and planner constraints. "
             "End your answer with a single line: MATCH: yes or MATCH: no."
@@ -256,21 +258,24 @@ class Qwen3VL4BHFClient:
         if match_line:
             if "yes" in match_line and "no" not in match_line:
                 match_flag = True
-            else:
+            elif "no" in match_line:
                 match_flag = False
         else:
-            negative = (
-                "not match" in lowered
-                or "no match" in lowered
-                or "does not" in lowered
-                or "not a plausible" in lowered
-                or "not " in lowered
-                or " no " in lowered
-            )
-            if negative:
-                match_flag = False
-            elif "yes" in lowered and "no" not in lowered:
+            # fallback to explicit yes/no cues
+            if re.search(r"\byes\b", lowered) and not re.search(r"\bno\b", lowered):
                 match_flag = True
+            elif "是" in answer and "不" not in answer:
+                match_flag = True
+            else:
+                negative = (
+                    "not match" in lowered
+                    or "no match" in lowered
+                    or "does not" in lowered
+                    or "not a plausible" in lowered
+                    or "not " in lowered
+                    or " no " in lowered
+                )
+                match_flag = False if negative else match_flag
 
         if match_flag:
             score = 1.0
@@ -292,13 +297,27 @@ class Qwen3VL4BHFClient:
             lines.append(f"- constraints: {'; '.join(parts)}")
         return "\n".join(lines)
 
-    def _sample_crops(self, crops: List[str]) -> List[str]:
-        """均匀采样轨迹裁剪，避免只看到前几帧的低质量画面。"""
+    def _sample_crops(self, package: EvidencePackage) -> List[str]:
+        """质量优先的均匀采样：分段取 bbox 面积较大的帧，覆盖前中后。"""
+        crops = package.crops
         if not crops:
             return []
         if len(crops) <= self.max_crops:
             return list(crops)
-        indices = np.linspace(0, len(crops) - 1, self.max_crops, dtype=int)
+        areas = []
+        for bbox in package.bboxes:
+            x1, y1, x2, y2 = bbox
+            areas.append(max((x2 - x1) * (y2 - y1), 1))
+        indices: List[int] = []
+        segments = np.array_split(range(len(crops)), self.max_crops)
+        for seg in segments:
+            if len(seg) == 0:
+                continue
+            best_idx = max(seg, key=lambda i: areas[i])
+            indices.append(best_idx)
+        indices = sorted(set(indices))
+        if len(indices) > self.max_crops:
+            indices = indices[: self.max_crops]
         return [crops[i] for i in indices]
 
     def _build_motion_narrative(self, package: EvidencePackage) -> str:
@@ -351,42 +370,59 @@ class Qwen3VL4BHFClient:
         return "center"
 
     def _render_minimap(self, package: EvidencePackage) -> Image.Image | None:
-        """生成速度感知的轨迹小地图，辅助 VLM 理解动作/方向。"""
+        """将轨迹叠加在真实帧上，带时间打点，辅助 VLM 理解场景内的路径。"""
         if cv2 is None:
             return None
         feats = package.features
-        if not feats or not feats.centroids:
+        if not feats or not feats.centroids or not package.frames:
             return None
 
-        canvas_w, canvas_h = self.minimap_size
-        canvas = np.ones((canvas_h, canvas_w, 3), dtype=np.uint8) * 255
+        # 选取轨迹中间帧
+        mid_idx = len(package.frames) // 2
+        target_frame_idx = max(package.frames[mid_idx] - 1, 0)
+
+        cap = cv2.VideoCapture(str(self.config.video_path))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame_idx)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            return None
+
+        height, width = frame.shape[:2]
         points = [
-            (int(cx * (canvas_w - 1)), int(cy * (canvas_h - 1)))
+            (int(cx * (width - 1)), int(cy * (height - 1)))
             for cx, cy in feats.centroids
         ]
+        overlay = frame.copy()
 
+        # 路径线
         if len(points) >= 2:
             cv2.polylines(
-                canvas,
+                overlay,
                 [np.array(points)],
                 isClosed=False,
-                color=(200, 200, 200),
-                thickness=2,
+                color=(0, 215, 255),  # BGR yellow-ish
+                thickness=3,
                 lineType=cv2.LINE_AA,
             )
 
+        # 时间打点
         fps = max(package.fps, 1e-3)
         step = max(int(fps * self.minimap_time_step_s), 1)
         for idx in range(0, len(points), step):
             pt = points[idx]
             progress = idx / max(len(points) - 1, 1)
-            color = (0, int(255 * (1 - progress)), int(255 * progress))  # BGR: green->red
-            cv2.circle(canvas, pt, radius=4, color=color, thickness=-1)
+            color = (0, int(255 * (1 - progress)), int(255 * progress))  # green->red
+            cv2.circle(overlay, pt, radius=5, color=color, thickness=-1)
 
+        # 起止标记
         if len(points) >= 1:
-            cv2.circle(canvas, points[0], 6, (0, 200, 0), 2)  # start marker
+            cv2.circle(overlay, points[0], 7, (0, 255, 0), 2)
+            cv2.putText(overlay, "START", (points[0][0] + 5, points[0][1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
         if len(points) >= 2:
-            cv2.arrowedLine(canvas, points[-2], points[-1], (0, 0, 255), 3, tipLength=0.3)
+            cv2.arrowedLine(overlay, points[-2], points[-1], (0, 0, 255), 3, tipLength=0.3)
+            cv2.putText(overlay, "END", (points[-1][0] + 5, points[-1][1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
 
-        rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        blended = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
+        rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
         return Image.fromarray(rgb)

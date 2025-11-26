@@ -117,6 +117,14 @@
 - `tests/test_phase1_components.py::test_question_search_uses_stub_vlm`  
   - 用 StubVLMClient 替代真实 VLM，验证 `question_search` 是否正确调用 Recall 和渲染函数，而不依赖模型本身。
 
+#### 近期改进建议（v1.28 思路）
+- 轨迹提示方式：参考 TraceVLA，将轨迹线/打点直接叠加在真实帧上（半透明、绿→红渐变、标注 START/END），而不是白底抽象图，便于 VLM 理解场景语义。
+- Prompt 结构：分块告知（外观图、叠加轨迹图），将几何计算出的方向/速度/位置变化作为“已确认事实”，最后一行仍用 `MATCH: yes/no`。
+- 方向几何过滤：Hard Rule Engine 已支持 `direction`，建议使用主运动方向过滤（可考虑分段票选，抵消“进店又出”导致的位移接近零）。
+- 采样质量：在均匀采样基础上，可优先选 bbox 面积大的帧或前中后分段抽样，避免模糊/遮挡帧。
+- 解析鲁棒：`MATCH` 行已启用，可再增加 yes/no/是/否 的 fallback，避免格式漂移。
+- 评分机制：考虑将 SigLIP 相似度、硬规则符合度、VLM 置信度做加权，或候选池模式降低分而非直接删除，减少漏召回。
+
 ---
 
 ### 4. Phase 2 —— 行为特征与基础事件 (ROI 停留 / 跟随)
