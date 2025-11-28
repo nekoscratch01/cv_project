@@ -1,4 +1,4 @@
-"""Hard Rule Engine operating on Atomic 8 features."""
+"""Hard Rule Engine operating on Atomic 8 features (with direction voting)."""
 
 from __future__ import annotations
 

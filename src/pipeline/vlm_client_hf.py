@@ -1,4 +1,11 @@
-"""Qwen3-VL-4B client powered by transformers (当前默认实现)."""
+"""Qwen3-VL-4B client (transformers) for verifier stage.
+
+v2.1 highlights:
+- Quality-aware crop sampling (per-segment largest box).
+- Trajectory overlay on real frame with time-coded dots and START/END.
+- Structured prompt (appearance / trajectory / geometric facts / constraints), final line MATCH: yes/no.
+- Robust parsing (MATCH line, yes/no, 中文 是/否 fallback).
+"""
 
 from __future__ import annotations
 
@@ -158,34 +165,12 @@ class Qwen3VL4BHFClient:
             return ""
 
         minimap_img = self._render_minimap(package)
-        motion_context = self._build_motion_narrative(package)
-        plan_context = self._build_plan_context(plan)
-        verification_prompt = (
-            plan.verification_prompt if plan and plan.verification_prompt else DEFAULT_VERIFICATION_PROMPT
-        )
-
-        appearance_count = len(limited_crops)
-        minimap_index = appearance_count + 1 if minimap_img else None
-        prompt = (
-            "You are a video analysis assistant.\n"
-            f"Original question: {question}\n"
-            f"{verification_prompt}\n"
-            f"Planner summary:\n{plan_context}\n"
-            f"Motion/position summary: {motion_context if motion_context else 'unknown.'}\n"
-        )
-        if minimap_index:
-            prompt += (
-                f"Images 1-{appearance_count} show the person's appearance.\n"
-                f"Image {minimap_index} shows the same scene with the person's motion path overlaid on the frame "
-                f"(green=start, red=end, yellow path, dots every {self.minimap_time_step_s:.1f}s). "
-                "Trust the overlaid path for direction/position.\n"
-            )
-        prompt += (
-            "Facts (computed from trajectory, do NOT re-judge): "
-            f"{motion_context if motion_context else 'unknown'}\n"
-            "Step 1: describe briefly what you see. "
-            "Step 2: decide if it matches the original question and planner constraints. "
-            "End your answer with a single line: MATCH: yes or MATCH: no."
+        prompt = self._build_verification_prompt(
+            package=package,
+            question=question,
+            plan=plan,
+            appearance_count=len(limited_crops),
+            minimap_present=minimap_img is not None,
         )
 
         # 构造 Qwen3-VL 聊天消息（本地 PIL 图像 + 文本）
@@ -368,6 +353,42 @@ class Qwen3VL4BHFClient:
         if x_ratio > 0.66:
             return "right side"
         return "center"
+
+    def _build_verification_prompt(
+        self,
+        package: EvidencePackage,
+        question: str,
+        plan: ExecutionPlan | None,
+        appearance_count: int,
+        minimap_present: bool,
+    ) -> str:
+        plan_context = self._build_plan_context(plan)
+        motion_context = self._build_motion_narrative(package)
+        minimap_index = appearance_count + 1 if minimap_present else None
+        minimap_desc = ""
+        if minimap_index:
+            minimap_desc = (
+                f"Image {minimap_index} is a scene frame with the person's motion path overlaid "
+                f"(yellow path, dots every {self.minimap_time_step_s:.1f}s, green=start, red=end, labeled START/END). "
+                "Trust this overlaid path for direction/position."
+            )
+
+        return (
+            f"## Task\n"
+            f'Verify if this person matches the query: "{question}"\n\n'
+            f"## Evidence\n"
+            f"### Appearance (images 1-{appearance_count})\n"
+            f"{'Images show the person at different moments.'}\n\n"
+            f"### Motion Summary (pre-computed facts, do NOT re-judge)\n"
+            f"{motion_context if motion_context else 'unknown'}\n\n"
+            f"### Trajectory Overlay\n"
+            f"{minimap_desc if minimap_desc else 'No overlaid path available.'}\n\n"
+            f"### Constraints from planner\n{plan_context}\n\n"
+            f"## Instructions\n"
+            f"1) Describe briefly what you see in the images.\n"
+            f"2) Check each constraint (visual, motion). State if they match or not.\n"
+            f"3) Final line: MATCH: yes or MATCH: no\n"
+        )
 
     def _render_minimap(self, package: EvidencePackage) -> Image.Image | None:
         """将轨迹叠加在真实帧上，带时间打点，辅助 VLM 理解场景内的路径。"""

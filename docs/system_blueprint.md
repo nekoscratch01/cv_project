@@ -95,6 +95,7 @@
 
 - `Qwen3VL4BHFClient` (`src/pipeline/vlm_client_hf.py`)  
   - 使用 transformers 直接加载 `Qwen/Qwen3-VL-4B-Instruct`，在 Verifier 阶段对候选轨迹做 Yes/No 判定并返回 `QueryResult` 列表（未来可替换为 llama-cpp GGUF）。
+  - v2.1：质量优先采样（分段取大框帧），轨迹叠加到真实帧（黄线、绿→红打点、START/END），结构化 Prompt（外观/动线/几何事实/约束，末行 `MATCH: yes/no`），解析更鲁棒（MATCH 行 + yes/no/中文 fallback）。
 
 - `VideoSemanticSystem` (`src/pipeline/video_semantic_search.py`)  
   - `build_index()`：Phase 0 的 orchestrator + 构建 `evidence_map`。  
@@ -105,10 +106,9 @@
     4. 将剩余候选交给 Qwen3‑VL‑4B（transformers）做终审，并按 score 排序，取前 `top_k`；  
     5. 打印结果 + 调 `render_highlight_video` 生成两个视频：结果视频（只框匹配轨迹）和全量轨迹视频（便于对比调试）。
 - VLM 提示与判定（v1.27 实际做法）：
-  - 均匀采样 crops + 小地图（轨迹打点图）输入；动作叙事层把速度/方向/左右位置翻译成人话。
-  - Prompt 不再强制 JSON，要求末行输出 `MATCH: yes/no`，解析仅看该行，避免小模型 JSON 格式不稳导致误判。
+  - v2.1：质量优先采样 + 轨迹叠加真实帧；结构化 Prompt（外观、轨迹覆盖、几何事实、约束），末行 `MATCH: yes/no`。
 - 方向/动作几何过滤（TODO，建议）：
-  - 在 Hard Rule Engine 增加 `direction` 约束（基于 displacement_vec 或首尾 x 差），先过滤明显反向/静止，再交给 VLM，减少“往右”误报。
+  - Hard Rule Engine 已支持 `direction`，基于轨迹分段投票的主方向，先过滤反向/静止再交给 VLM，减少误报。
 
 **单独测试入口**
 

@@ -1,4 +1,10 @@
-"""Phase 1 entry point: question-driven person retrieval."""
+"""Phase 1 entry point: question-driven person retrieval (v2.1).
+
+Pipeline:
+- build_index: perception -> features -> evidence map.
+- question_search: router -> recall -> hard rules -> VLM verifier (MATCH line).
+- Outputs both result video (matched tracks) and all-tracks debug video.
+"""
 
 from __future__ import annotations
 
