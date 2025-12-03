@@ -165,21 +165,21 @@ class VideoSemanticSystem:
         print("\n=== Stage 1: Perception ===")
         # 感知层：检测和跟踪
         self.track_records, self.metadata = self.perception.process()
-        print(f"   ✅ 有效 track 数: {len(self.track_records)}")
+        print(f"   ✅ Valid tracks: {len(self.track_records)}")
 
         print("\n=== Stage 2: Feature Extraction ===")
         # 特征层：计算运动特征
         feature_extractor = TrackFeatureExtractor(self.metadata)
         self.features = feature_extractor.extract(self.track_records)
-        print("   ✅ 轨迹特征完成")
+        print("   ✅ Track features computed")
 
-        print("\n=== Stage 3: 构建证据包 ===")
+        print("\n=== Stage 3: Build evidence packages ===")
         # 证据层：打包所有信息
         video_id = Path(self.config.video_path).stem  # 提取文件名作为video_id
         self.evidence_map = build_evidence_packages(
             video_id, self.track_records, self.metadata, self.features
         )
-        print(f"   ✅ 构建 {len(self.evidence_map)} 个证据包")
+        print(f"   ✅ Built {len(self.evidence_map)} evidence packages")
 
         # 持久化：保存到磁盘
         self._persist_database()
@@ -262,14 +262,14 @@ class VideoSemanticSystem:
         """
         # 检查是否已经建立索引
         if self.evidence_map is None:
-            raise RuntimeError("请先运行 build_index()")
+            raise RuntimeError("Please run build_index() first")
 
         print(f"\n=== Version: {VERSION} ===")
-        print("\n=== 查询: 问题驱动检索 ===")
-        print(f"描述: {question}")
+        print("\n=== Query: Question-driven retrieval ===")
+        print(f"Query: {question}")
 
         plan = self.router.build_plan(question)
-        print("   🧭 路由计划:", plan.to_dict())
+        print("   🧭 Routing plan:", plan.to_dict())
 
         # Step 1: 召回阶段（筛选候选）
         all_tracks = list(self.evidence_map.values())
@@ -282,20 +282,20 @@ class VideoSemanticSystem:
             visual_tags=plan.visual_tags,
             top_k=recall_top_k,
         )
-        print(f"   🔎 候选轨迹数: {len(candidates)}")
+        print(f"   🔎 Candidate tracks: {len(candidates)}")
 
         # Step 1.5: Hard Rule Engine
         hard_engine = self._ensure_hard_rule_engine()
         candidates = hard_engine.apply_constraints(candidates, plan)
-        print(f"   📐 硬规则过滤后: {len(candidates)}")
+        print(f"   📐 After hard rules: {len(candidates)}")
         if not candidates:
-            print("   ❌ 无满足硬规则的候选")
+            print("   ❌ No candidates after hard rules")
             return []
 
         # Step 2: VLM精排阶段（AI判断）
         vlm_results = self.vlm_client.answer(question, candidates, plan=plan)
         if not vlm_results:
-            print("   ❌ 未找到匹配轨迹")
+            print("   ❌ No matching tracks")
             return []
 
         # Step 3: 排序与截断
@@ -303,10 +303,10 @@ class VideoSemanticSystem:
         selected = vlm_results[:top_k]  # 取前 top_k 个
 
         # 打印匹配结果
-        print("   ✅ VLM 匹配结果:")
+        print("   ✅ VLM matches:")
         for item in selected:
             print(
-                f"      - Track {item.track_id}: {item.start_s:.1f}s → {item.end_s:.1f}s | 理由: {item.reason}"
+                f"      - Track {item.track_id}: {item.start_s:.1f}s → {item.end_s:.1f}s | reason: {item.reason}"
             )
 
         # 汇总一句话回答：用同一 4B VLM 生成最终答复
@@ -315,16 +315,16 @@ class VideoSemanticSystem:
             try:
                 final_answer = self.vlm_client.compose_final_answer(question, selected)  # type: ignore
             except Exception as exc:  # noqa: BLE001
-                print(f"   ⚠️  汇总回答失败: {exc}")
+                print(f"   ⚠️  Failed to compose final answer: {exc}")
         if not final_answer:
             if selected:
-                summary_text = "，".join(
-                    f"轨迹{item.track_id}（{item.start_s:.1f}s–{item.end_s:.1f}s）" for item in selected
+                summary_text = ", ".join(
+                    f"track {item.track_id} ({item.start_s:.1f}s–{item.end_s:.1f}s)" for item in selected
                 )
-                final_answer = f"最可能匹配：{summary_text}。"
+                final_answer = f"Most likely matches: {summary_text}."
             else:
-                final_answer = "未找到匹配轨迹。"
-        print(f"\n📝 汇总回答：{final_answer}")
+                final_answer = "No matching tracks found."
+        print(f"\n📝 Final answer: {final_answer}")
 
         # Step 4: 可视化（画红框视频）
         track_ids = [item.track_id for item in selected]
@@ -349,15 +349,15 @@ class VideoSemanticSystem:
             debug_output,
             label_text="all tracks",
         )
-        print(f"   🎞️ 结果视频: {video_output}")
-        print(f"   🎞️ 全量轨迹: {debug_output}")
+        print(f"   🎞️ Result video: {video_output}")
+        print(f"   🎞️ All-tracks video: {debug_output}")
 
         return selected
 
     def _ensure_hard_rule_engine(self) -> HardRuleEngine:
         if self.hard_rule_engine is None:
             if self.metadata is None:
-                raise RuntimeError("缺少 metadata，无法初始化 HardRuleEngine")
+                raise RuntimeError("Missing metadata; cannot initialize HardRuleEngine")
             self.hard_rule_engine = HardRuleEngine(self.config, self.metadata)
         elif self.hard_rule_engine.metadata is None and self.metadata is not None:
             self.hard_rule_engine.metadata = self.metadata
@@ -370,7 +370,7 @@ class VideoSemanticSystem:
 
             hf_client = self.vlm_client if isinstance(self.vlm_client, Qwen3VL4BHFClient) else None
             return HFRouter(self.config, hf_client=hf_client)
-        raise RuntimeError(f"未知 router_backend: {self.config.router_backend!r}")
+        raise RuntimeError(f"Unknown router_backend: {self.config.router_backend!r}")
 
     def _build_vlm_client(self):
         if self.config.vlm_backend in {"hf", "transformers", "llama_cpp"}:
@@ -378,7 +378,7 @@ class VideoSemanticSystem:
 
             return Qwen3VL4BHFClient(self.config)
         raise RuntimeError(
-            "当前仅支持 vlm_backend in {'hf', 'transformers'}，旧的 GGUF / 2B 模型路径已移除。"
+            "Only vlm_backend in {'hf', 'transformers', 'llama_cpp'} is supported; legacy GGUF/2B paths removed."
         )
 
     def _persist_database(self) -> None:
@@ -460,7 +460,7 @@ class VideoSemanticSystem:
                 indent=2,              # 缩进2个空格（美观）
                 ensure_ascii=False     # 允许中文等非ASCII字符
             )
-        print(f"   💾 数据库存储: {db_path}")
+        print(f"   💾 Database saved: {db_path}")
 
 
 def run_demo() -> None:
@@ -498,7 +498,7 @@ def run_demo() -> None:
 
     # 执行演示查询
     print("\n=== Demo Queries ===")
-    system.question_search("找出往左边走的穿蓝色衣服的人，他是在跑还是走路？", top_k=5)
+    system.question_search("Find the person in blue moving left — are they running or walking?", top_k=5)
 
 
 if __name__ == "__main__":

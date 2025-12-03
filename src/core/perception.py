@@ -204,7 +204,7 @@ class VideoPerception:
         label_text: str,
     ) -> None:
         if not target_ids:
-            print("   ⚠️  没有目标需要可视化，跳过视频导出")
+            print("   ⚠️  No targets to visualize; skip video export")
             return
 
         target_set = set(target_ids)
@@ -224,13 +224,13 @@ class VideoPerception:
             str(output_path), fourcc, metadata.fps, (metadata.width, metadata.height)
         )
         if not out.isOpened():
-            print("   ⚠️ avc1 编码器打开失败，尝试使用 mp4v ...")
+            print("   ⚠️ Failed to open avc1 encoder, trying mp4v ...")
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             out = cv2.VideoWriter(
                 str(output_path), fourcc, metadata.fps, (metadata.width, metadata.height)
             )
         if not out.isOpened():
-            print(f"   ❌ 无法创建输出视频文件: {output_path}")
+            print(f"   ❌ Cannot create output video file: {output_path}")
             cap.release()
             return
 
