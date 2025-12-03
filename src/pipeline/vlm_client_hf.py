@@ -55,6 +55,9 @@ class Qwen3VL4BHFClient:
         repo_id = "Qwen/Qwen3-VL-4B-Instruct"
         self._torch = torch
         self.processor = AutoProcessor.from_pretrained(repo_id)
+        # Decoder-only: ensure left padding to avoid warning / misalignment.
+        if hasattr(self.processor, "tokenizer"):
+            self.processor.tokenizer.padding_side = "left"
         # 按官方 README 推荐：dtype=\"auto\" + device_map=\"auto\"
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
             repo_id,
