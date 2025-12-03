@@ -40,6 +40,7 @@ class Qwen3VL4BHFClient:
     max_crops: int = 5
     minimap_size: Tuple[int, int] = (336, 336)
     minimap_time_step_s: float = 0.5
+    batch_size: int = 4
 
     def __post_init__(self) -> None:
         try:
@@ -47,8 +48,8 @@ class Qwen3VL4BHFClient:
             from transformers import AutoProcessor, Qwen3VLForConditionalGeneration  # type: ignore
         except ImportError as exc:
             raise RuntimeError(
-                "缺少 transformers 或 Qwen3-VL 支持，无法使用非量化 Qwen3-VL-4B。\n"
-                "请先执行：pip install -U transformers"
+                "Missing transformers or Qwen3-VL support; non-quantized Qwen3-VL-4B cannot be used.\n"
+                "Please run: pip install -U transformers"
             ) from exc
 
         repo_id = "Qwen/Qwen3-VL-4B-Instruct"
@@ -62,13 +63,14 @@ class Qwen3VL4BHFClient:
         )
         self.temperature = self.config.vlm_temperature
         self.max_new_tokens = self.config.vlm_max_new_tokens
+        self.batch_size = getattr(self.config, "vlm_batch_size", self.batch_size)
 
     def compose_final_answer(self, question: str, results: List[QueryResult]) -> str:
         """
         用同一个 4B VLM 对筛选后的轨迹做一次总回答，直接返回给用户。
         """
         if not results:
-            return "未找到匹配轨迹。"
+            return "No matching tracks found."
 
         summary_lines = []
         for item in results:
@@ -84,10 +86,10 @@ class Qwen3VL4BHFClient:
                     {
                         "type": "text",
                         "text": (
-                            "You are an assistant summarizing video retrieval results. "
-                            "Given the original question and the shortlisted tracks with reasons, "
-                            "provide a concise final answer in Chinese that tells the user which tracks match. "
-                            "If none, say no match."
+                        "You are an assistant summarizing video retrieval results. "
+                        "Given the original question and the shortlisted tracks with reasons, "
+                        "provide a concise final answer in English that tells the user which tracks match. "
+                        "If none, say no match."
                         ),
                     }
                 ],
@@ -131,38 +133,73 @@ class Qwen3VL4BHFClient:
         top_k: int | None = None,
     ) -> List[QueryResult]:
         results: List[QueryResult] = []
+        batch_messages: list[list[dict]] = []
+        batch_packages: list[EvidencePackage] = []
+
+        def flush_batch() -> bool:
+            """Run one VLM batch and append matches to results. Returns True if top_k reached."""
+            if not batch_messages:
+                return False
+            try:
+                batch_answers = self._run_batch_inference(batch_messages)
+            except Exception as exc:
+                print(f"[HF VLM] batch of {len(batch_messages)} failed: {exc}")
+                batch_messages.clear()
+                batch_packages.clear()
+                return False
+
+            for package, answer_text in zip(batch_packages, batch_answers):
+                match, score, reason = self._parse_answer(answer_text)
+                if not match:
+                    continue
+                results.append(
+                    QueryResult(
+                        track_id=package.track_id,
+                        start_s=package.start_time_seconds,
+                        end_s=package.end_time_seconds,
+                        score=score,
+                        reason=reason,
+                    )
+                )
+                if top_k is not None and len(results) >= top_k:
+                    batch_messages.clear()
+                    batch_packages.clear()
+                    return True
+
+            batch_messages.clear()
+            batch_packages.clear()
+            return False
+
         for idx, package in enumerate(candidates, start=1):
             if top_k is not None and len(results) >= top_k:
                 break
             if not package.crops:
                 continue
-            print(f"[HF VLM] checking track {package.track_id} ({idx}) ...")
-            answer = self._query_package(package, question, plan)
-            if not answer:
+            print(f"[HF VLM] queue track {package.track_id} ({idx}) ...")
+            messages = self._build_messages(package, question, plan)
+            if not messages:
                 continue
-            match, score, reason = self._parse_answer(answer)
-            if not match:
-                continue
-            results.append(
-                QueryResult(
-                    track_id=package.track_id,
-                    start_s=package.start_time_seconds,
-                    end_s=package.end_time_seconds,
-                    score=score,
-                    reason=reason,
-                )
-            )
+            batch_packages.append(package)
+            batch_messages.append(messages)
+            if len(batch_messages) >= self.batch_size:
+                if flush_batch():
+                    break
+
+        if batch_messages and (top_k is None or len(results) < top_k):
+            flush_batch()
+
         return results
 
-    def _query_package(
+    def _build_messages(
         self,
         package: EvidencePackage,
         question: str,
         plan: ExecutionPlan | None,
-    ) -> str:
+    ) -> list[dict] | None:
+        """Construct chat messages (images + prompt) for one package."""
         limited_crops = self._sample_crops(package)
         if not limited_crops:
-            return ""
+            return None
 
         minimap_img = self._render_minimap(package)
         prompt = self._build_verification_prompt(
@@ -173,7 +210,6 @@ class Qwen3VL4BHFClient:
             minimap_present=minimap_img is not None,
         )
 
-        # 构造 Qwen3-VL 聊天消息（本地 PIL 图像 + 文本）
         user_content = []
         for crop in limited_crops:
             img = Image.open(Path(crop)).convert("RGB")
@@ -194,13 +230,32 @@ class Qwen3VL4BHFClient:
             },
             {"role": "user", "content": user_content},
         ]
+        return messages
 
-        # 参照官方 README：processor.apply_chat_template + model.generate
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
+    def _run_batch_inference(self, batch_messages: list[list[dict]]) -> list[str]:
+        """Run VLM inference for a batch of messages."""
+        if not batch_messages:
+            return []
+
+        texts = [
+            self.processor.apply_chat_template(
+                msgs,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            for msgs in batch_messages
+        ]
+
+        batch_images: list[list[Image.Image]] = []
+        for msgs in batch_messages:
+            user_content = next(m["content"] for m in msgs if m.get("role") == "user")
+            imgs = [item["image"] for item in user_content if item.get("type") == "image"]
+            batch_images.append(imgs)
+
+        inputs = self.processor(
+            text=texts,
+            images=batch_images,
+            padding=True,
             return_tensors="pt",
         )
         inputs = inputs.to(self.model.device)
@@ -212,7 +267,6 @@ class Qwen3VL4BHFClient:
                 temperature=self.temperature,
             )
 
-        # 去掉提示部分，只保留生成的新 token
         generated_ids_trimmed = [
             out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
@@ -221,6 +275,18 @@ class Qwen3VL4BHFClient:
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )
+        return answers
+
+    def _query_package(
+        self,
+        package: EvidencePackage,
+        question: str,
+        plan: ExecutionPlan | None,
+    ) -> str:
+        messages = self._build_messages(package, question, plan)
+        if not messages:
+            return ""
+        answers = self._run_batch_inference([messages])
         return answers[0] if answers else ""
 
     @staticmethod

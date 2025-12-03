@@ -1,14 +1,10 @@
-# 🧭 系统蓝图总览
+# 🧭 当前系统总览（v2.1，面向读者的“怎么跑、怎么用”）
 
-> 这一份文档现在分成两层：  
-> **Part I**：当前代码已经实现/正在实现的 Phase 0–2 蓝图（方便对照 src 目录和测试）。  
-> **Part II**：更完整的 Edge‑Detective v5.0 架构（长期“施工图纸”，不要求一次到位）。
+这份文档只讲**当前落地的能力与流程**，不谈远期架构。目标：让不看代码的人也能理解这个系统是做什么的、怎么跑、输出什么。
 
 ---
 
-## Part I：现有实现蓝图（Phase 0–2）
-
-### 1. 当前核心类型（和代码对应）
+## 1. 关键数据结构（看这些就能理解流水线）
 
 | 概念 | 文件 | 作用 |
 |------|------|------|
@@ -18,19 +14,11 @@
 | `EvidencePackage` | `src/core/evidence.py` | 面向各层模型的证据包：`video_id, track_id, frames, bboxes, crops, fps, motion(TrackFeatures)` |
 | `QueryResult` | `src/vlm_client.py` | VLM 对每条轨迹在某个问题下的判断结果：`track_id, start_s, end_s, score, reason` |
 
-这些类型已经在代码里实现，是目前所有流程的数据基础。
-
 ---
 
-### 2. Phase 0 —— 感知与轨迹索引
+## 2. 感知与索引（Phase 0）
 
-**一句话目标**：  
-把一条“乱糟糟的原始视频”切成一批**干净的轨迹对象**，并能随时在原视频上高亮其中任何一条轨迹。
-
-可以把 Phase 0 理解成：  
-> 只做基础设施，不回答任何问题，只保证切得干净、时间对齐、能画框。
-
-**组件与文件（按处理顺序）**
+**目标**：把原始视频切成一批轨迹对象，并能画框检查。
 
 - `VideoPerception` (`src/core/perception.py`)  
   - 输入：`SystemConfig.video_path`（当前通常指 MOT17 合成的视频路径）。  
@@ -76,7 +64,7 @@
 
 ---
 
-### 3. Phase 1 —— 单视频、人检索、问题驱动 QA
+## 3. 问题驱动检索（Phase 1）
 
 **一句话目标**：  
 用户用一句自然语言描述“想找的人”，系统在这条视频里把所有人拿出来问一遍 VLM，最后告诉你：谁最像、在哪几秒、为什么。
@@ -105,8 +93,8 @@
     3. 用 Hard Rule Engine 在 Atomic 8 空间做几何过滤与排序；  
     4. 将剩余候选交给 Qwen3‑VL‑4B（transformers）做终审，并按 score 排序，取前 `top_k`；  
     5. 打印结果 + 调 `render_highlight_video` 生成两个视频：结果视频（只框匹配轨迹）和全量轨迹视频（便于对比调试）。
-- VLM 提示与判定（v1.27 实际做法）：
-  - v2.1：质量优先采样 + 轨迹叠加真实帧；结构化 Prompt（外观、轨迹覆盖、几何事实、约束），末行 `MATCH: yes/no`。
+- VLM 提示与判定（v2.1）：
+  - 质量优先采样 + 轨迹叠加真实帧；结构化 Prompt（外观、轨迹覆盖、几何事实、约束），末行 `MATCH: yes/no`。
 - 方向/动作几何过滤（TODO，建议）：
   - Hard Rule Engine 已支持 `direction`，基于轨迹分段投票的主方向，先过滤反向/静止再交给 VLM，减少误报。
 
@@ -164,53 +152,23 @@
 
 ---
 
-## Part II：通往 v6 的修改计划（Blueprint v6.0 Migration）
+# 4. 调试与工具
 
-> v6 的完整“施工图纸”已经单独放在 `docs/edge_detective_blueprint_v6.md`。  
-> 这一部分只回答三个问题：  
-> 1）从现在的 Phase 0–2 怎么一步一步长成 v6？  
-> 2）每一步尽量保持高解耦、可单测？  
-> 3）未来接 live / Redis / 多视频 时不会推翻现有设计？
+# 5. 运行/调试速查
 
-### 1. 数据协议对齐：从当前结构走向 Atomic 8
+- 运行主流程：`cd repo && PYTHONPATH=src python -m pipeline.video_semantic_search`
+- 轨迹高亮（含路径）调试视频：`python tests/render_tracks_with_paths.py` 输出 `output/tracks_with_paths*.mp4`
+- 单轨迹动线图（给 VLM 的那类叠加图）：`python tests/motion_plot_demo.py`
+- 查看数据库：`output/semantic_database.json`
 
-目标：在不破坏现有逻辑和测试的前提下，让代码里的 `TrackFeatures` / `EvidencePackage` 渐进式靠近 v6 中的“Atomic 8 + EvidencePackage” 协议。
+---
 
-- 在 `src/core/features.py` 中扩展 `TrackFeatures`：
-  - 增加时间与空间字段：`start_s, end_s, centroids, displacement_vec`；
-  - 全部从现有 `TrackRecord.frames + bboxes + VideoMetadata.fps` 推导出来；
-  - 保留原有字段 `duration_s, path_length_px, avg_speed_px_s, max_speed_px_s`，不删不改。
-- 在 `src/core/evidence.py` 中扩展 `EvidencePackage`：
-  - 增加 `meta: {video_id, fps, resolution}`；
-  - 增加 `raw_trace`（等价于现在的 `bboxes`，先做别名即可）；
-  - 增加 `embedding` 字段，初期固定为 `None`，等接入 SigLIP 后再真正写入向量；
-  - 保持现有字段名不变，保证 Phase 1/2 的调用与测试全部继续通过。
+# 6. 未来思路/提升方向
 
-> 检查点：  
-> - 所有已有测试 (`test_phase1_components.py`, `test_phase2_behavior.py`) 仍然通过；  
-> - 新增字段可以在单独的小测试里验证数值正确性（如 `centroids` 是否在 0–1 之间，`displacement_vec` 是否等于终点减起点）。
-
-### 2. 行为特征 → Hard Rule Engine：把 Phase 2 变成 v6 的 Tier 0
-
-目标：复用现有 `BehaviorFeatureExtractor` / `EventDetector`，对上抽象成 v6 里的 Hard Rule Engine 接口，而不是堆在业务代码里。
-
-- 新增模块：`src/core/hard_rules.py`，提供统一入口：
-
-  ```python
-  def apply_hard_rules(
-      tracks: List[EvidencePackage],
-      rules: Dict
-  ) -> List[EvidencePackage]:
-      ...
-  ```
-
-- 实现思路：
-  - 利用 `EvidencePackage.features` 中的 `centroids / start_s / end_s / duration_s / avg_speed_px_s`，实现基础算子：
-    - ROI 相关：`enter / exit / stay / cross` 对应当前 ROI 停留逻辑；
-    - 跟随相关：在内部复用 `EventDetector.detect_follow_events`；
-    - 排序相关：`time_desc / speed_desc / duration_desc`。
-  - `rules` 为字典（由 Router 生成），但 Hard Rule Engine 本身不依赖任何 LLM。
-- 单测策略：
+- Recall 评分：SigLIP 相似度 + 硬规则符合度 + VLM 置信度做加权，或候选池（软过滤）避免漏召回。
+- 解释性输出：结构化 reason（视觉/运动证据、匹配/不匹配原因、置信度）而不止一段 VLM 文本。
+- 更精细采样：结合清晰度/遮挡度评分。
+- 方向判定：分段票选已上线，如需可扩展掉头检测。
   - 在 `tests/` 下新增 `test_hard_rules.py`；
   - 用手工构造的 `EvidencePackage`（或把现有行为测试里的简单场景重用）来验证：
     - `spatial_op="enter"` 时是否只返回进过 ROI 的轨迹；

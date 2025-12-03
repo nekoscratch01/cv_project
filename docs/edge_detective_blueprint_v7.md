@@ -1,22 +1,27 @@
-这份文档是 **Edge‑Detective v7.0** 的**技术规格说明书 (Engineering Spec)**。  
-它在 v6 的“理想三模型架构”基础上，收敛成一个**在 Mac M4（16GB）上真能跑起来的版本**：
+这份文档是 **Edge‑Detective v7.0** 的**目标蓝图 / 架构稿**，用于描述我们“希望做到的样子”。它面向架构设计而非当前落地代码，包含目标模型栈、协议、示例流程与评估方式。
 
-- 保留：Atomic 8 + EvidencePackage 协议、四层结构（Router / Recall / Hard Rules / Verifier）、场景 A/B/C 的工作流；
-- 调整：模型栈从“Qwen3-4B-Thinking + Qwen3-VL-2B + SigLIP 三件套”简化为：
-  - **一个 Qwen3‑VL‑4B（Int4）** 同时担任 Router + Verifier；
-  - **一个 CLIP/SigLIP** 负责向量粗筛。
+- 保留：Atomic 8 + EvidencePackage 协议、四层结构（Router / Recall / Hard Rules / Verifier）、典型场景 A/B/C 工作流。
+- 简化：模型栈收敛为“单 4B VLM + SigLIP/CLIP”，优先使用 CUDA GPU（可回退 MPS/CPU）。
 
 -----
 
-# 🏗️ Edge-Detective v7.0 技术规格说明书 (M4 实施版)
+# 🏗️ Edge-Detective v7.0 技术规格说明书
 
-> **文档性质**: 实施标准 / 架构定义（M4 可运行版本）  
-> **适用硬件**: Mac M4 (16GB RAM) / 近似算力边缘设备  
-> **核心模型**: Qwen3‑VL‑4B‑Instruct‑GGUF (单模型双角色) + CLIP/SigLIP  
-> **量化标准**: 4B VLM 使用 **GGUF Int4**
+> **文档性质**: 实施标准 / 架构定义（轻量可落地版本）  
+> **优先硬件**: CUDA GPU（8–16GB 显存为宜，MPS/CPU 可回退但性能下降）  
+> **核心模型**: Qwen3‑VL‑4B‑Instruct（transformers 或 GGUF） + CLIP/SigLIP  
+> **量化**: 可按硬件选择 FP16/Int4
 
 核心思路一句话：  
-> 一个 4B VLM 负责“理解 + 规划 + 最终判断”，几何真相由 Atomic 8 保证，CLIP 只在中间做一次高召回粗筛。
+> “单 4B VLM” 负责 Router+Verifier，Atomic 8 保证几何真相，SigLIP/CLIP 做粗筛。轨迹/ROI/速度等几何事实通过 Hard Rule 与 Prompt 结合，最终输出可解释的匹配结果。
+
+示例（目标效果）：
+- Query：“找穿红色衣服，从右向左跑进店里的人。”
+  1) Router 输出：`visual_tags=["red clothes"]`，`constraints={"direction":"left","sort_by":"avg_speed_px_s"}`，验证提示。
+  2) Recall：SigLIP 取 Top-K 相似轨迹。
+  3) Hard Rules：过滤方向、ROI=door，按速度降序。
+  4) Verifier：送裁剪+叠加轨迹帧，Prompt 告知方向/速度事实，返回 MATCH=Yes/No+理由。
+  5) 输出：轨迹 ID、时间段、理由、叠加轨迹图/视频。
 
 -----
 
@@ -49,7 +54,7 @@ v7 **完全沿用** v6 的 Atomic 8 与 EvidencePackage 协议，不做任何削
 - **存储位置**: `EvidencePackage.crops_paths`  
 - **生成时机**: 感知阶段，对 `TrackRecord` 采样后保存为 jpg。
 
-采样策略（保持与 v6 一致，只是落地到 M4）：
+采样策略（保持与 v6 一致，可按硬件取舍）：
 
 - 过滤分辨率 \< 50×50 的碎片；
 - 用 Laplacian 清晰度评分，从该轨迹所有帧中挑出 Top‑3 ~ Top‑5；
@@ -373,4 +378,3 @@ v7 相当于给 v6 做了一个 **“M4 可运行版压缩”**：
 - 把现有 Recall/VLMClient/behavior 模块按照这里的接口慢慢对齐，
 
 你就可以在当前的 Mac 上先跑出一个真正“按问题找人/找行为”的 v1 系统了。
-
