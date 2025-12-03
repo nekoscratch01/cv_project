@@ -29,8 +29,8 @@ class SystemConfig:
     vlm_gpu_layers: int = -1
     vlm_cpu_threads: int | None = None
     vlm_temperature: float = 0.1
-    vlm_max_new_tokens: int = 1024
-    vlm_batch_size: int = 32
+    vlm_max_new_tokens: int = 256
+    vlm_batch_size: int = 8
     # Router 默认也使用同一个 4B 模型；当前实现仅提供 transformers 版本
     router_backend: str = "hf"  # 允许保留 "llama_cpp" 占位
     router_gguf_path: Path | None = None
