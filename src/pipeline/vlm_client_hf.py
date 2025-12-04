@@ -57,6 +57,9 @@ class Qwen3VL4BHFClient:
         repo_id = "Qwen/Qwen3-VL-4B-Instruct"
         self._torch = torch
         self.processor = AutoProcessor.from_pretrained(repo_id)
+        # Prefer fast image processor if available.
+        if hasattr(self.processor, "image_processor"):
+            setattr(self.processor.image_processor, "use_fast", True)
         # Decoder-only: ensure left padding to avoid warning / misalignment.
         if hasattr(self.processor, "tokenizer"):
             self.processor.tokenizer.padding_side = "left"
@@ -66,6 +69,7 @@ class Qwen3VL4BHFClient:
             dtype="auto",
             device_map="auto",
         )
+        print(f"[HF VLM] device map: {getattr(self.model, 'hf_device_map', 'n/a')}")
         self.temperature = self.config.vlm_temperature
         self.max_new_tokens = self.config.vlm_max_new_tokens
         # Use config-provided batch size to keep a single source of truth.
@@ -256,6 +260,7 @@ class Qwen3VL4BHFClient:
         if not batch_messages:
             return []
 
+        t0 = time.monotonic()
         texts = [
             self.processor.apply_chat_template(
                 msgs,
@@ -264,12 +269,14 @@ class Qwen3VL4BHFClient:
             )
             for msgs in batch_messages
         ]
+        t_templates = time.monotonic()
 
         batch_images: list[list[Image.Image]] = []
         for msgs in batch_messages:
             user_content = next(m["content"] for m in msgs if m.get("role") == "user")
             imgs = [item["image"] for item in user_content if item.get("type") == "image"]
             batch_images.append(imgs)
+        t_images = time.monotonic()
 
         inputs = self.processor(
             text=texts,
@@ -277,7 +284,9 @@ class Qwen3VL4BHFClient:
             padding=True,
             return_tensors="pt",
         )
+        t_proc = time.monotonic()
         inputs = inputs.to(self.model.device)
+        t_to_device = time.monotonic()
 
         with self._torch.no_grad():
             generated_ids = self.model.generate(
@@ -285,6 +294,7 @@ class Qwen3VL4BHFClient:
                 max_new_tokens=self.max_new_tokens,
                 temperature=self.temperature,
             )
+        t_generate = time.monotonic()
 
         generated_ids_trimmed = [
             out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
@@ -293,6 +303,19 @@ class Qwen3VL4BHFClient:
             generated_ids_trimmed,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
+        )
+        t_decode = time.monotonic()
+        print(
+            "[HF VLM timing] templates={:.2f}s images={:.2f}s proc={:.2f}s to_device={:.2f}s "
+            "generate={:.2f}s decode={:.2f}s total={:.2f}s".format(
+                t_templates - t0,
+                t_images - t_templates,
+                t_proc - t_images,
+                t_to_device - t_proc,
+                t_generate - t_to_device,
+                t_decode - t_generate,
+                t_decode - t0,
+            )
         )
         return answers
 
