@@ -10,6 +10,7 @@ v2.1 highlights:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import concurrent.futures
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
@@ -40,7 +41,7 @@ class Qwen3VL4BHFClient:
     max_crops: int = 5
     minimap_size: Tuple[int, int] = (336, 336)
     minimap_time_step_s: float = 0.5
-    batch_size: int = 4
+    batch_size: int = 8
 
     def __post_init__(self) -> None:
         try:
@@ -66,7 +67,8 @@ class Qwen3VL4BHFClient:
         )
         self.temperature = self.config.vlm_temperature
         self.max_new_tokens = self.config.vlm_max_new_tokens
-        self.batch_size = getattr(self.config, "vlm_batch_size", self.batch_size)
+        # Use config-provided batch size to keep a single source of truth.
+        self.batch_size = self.config.vlm_batch_size
 
     def compose_final_answer(self, question: str, results: List[QueryResult]) -> str:
         """
@@ -214,8 +216,12 @@ class Qwen3VL4BHFClient:
         )
 
         user_content = []
-        for crop in limited_crops:
-            img = Image.open(Path(crop)).convert("RGB")
+        # Parallelize image loading for I/O bound speedup.
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, len(limited_crops) or 1)
+        ) as executor:
+            images = list(executor.map(lambda p: Image.open(Path(p)).convert("RGB"), limited_crops))
+        for img in images:
             user_content.append({"type": "image", "image": img})
         if minimap_img is not None:
             user_content.append({"type": "image", "image": minimap_img})
