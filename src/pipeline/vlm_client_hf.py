@@ -69,7 +69,6 @@ class Qwen3VL4BHFClient:
             torch_dtype=getattr(torch, "float16", None) or "auto",
             device_map={"": "cuda"},
         )
-        print(f"[HF VLM] device map: {getattr(self.model, 'hf_device_map', 'n/a')}")
         self.temperature = self.config.vlm_temperature
         self.max_new_tokens = self.config.vlm_max_new_tokens
         # Use config-provided batch size to keep a single source of truth.
@@ -144,69 +143,27 @@ class Qwen3VL4BHFClient:
         top_k: int | None = None,
     ) -> List[QueryResult]:
         results: List[QueryResult] = []
-        batch_messages: list[list[dict]] = []
-        batch_packages: list[EvidencePackage] = []
-        t_start = time.monotonic()
-
-        def flush_batch() -> bool:
-            """Run one VLM batch and append matches to results. Returns True if top_k reached."""
-            if not batch_messages:
-                return False
-            t_batch_start = time.monotonic()
-            try:
-                batch_answers = self._run_batch_inference(batch_messages)
-            except Exception as exc:
-                print(f"[HF VLM] batch of {len(batch_messages)} failed: {exc}")
-                batch_messages.clear()
-                batch_packages.clear()
-                return False
-            t_batch_end = time.monotonic()
-            print(
-                f"[HF VLM] batch size={len(batch_messages)} time={t_batch_end - t_batch_start:.2f}s "
-                f"(total so far {t_batch_end - t_start:.2f}s)"
-            )
-
-            for package, answer_text in zip(batch_packages, batch_answers):
-                match, score, reason = self._parse_answer(answer_text)
-                if not match:
-                    continue
-                results.append(
-                    QueryResult(
-                        track_id=package.track_id,
-                        start_s=package.start_time_seconds,
-                        end_s=package.end_time_seconds,
-                        score=score,
-                        reason=reason,
-                    )
-                )
-                if top_k is not None and len(results) >= top_k:
-                    batch_messages.clear()
-                    batch_packages.clear()
-                    return True
-
-            batch_messages.clear()
-            batch_packages.clear()
-            return False
-
         for idx, package in enumerate(candidates, start=1):
             if top_k is not None and len(results) >= top_k:
                 break
             if not package.crops:
                 continue
-            print(f"[HF VLM] queue track {package.track_id} ({idx}) ...")
-            messages = self._build_messages(package, question, plan)
-            if not messages:
+            print(f"[HF VLM] checking track {package.track_id} ({idx}) ...")
+            answer = self._query_package(package, question, plan)
+            if not answer:
                 continue
-            batch_packages.append(package)
-            batch_messages.append(messages)
-            if len(batch_messages) >= self.batch_size:
-                if flush_batch():
-                    break
-
-        if batch_messages and (top_k is None or len(results) < top_k):
-            flush_batch()
-        print(f"[HF VLM] total time={time.monotonic() - t_start:.2f}s for {len(results)} matches")
-
+            match, score, reason = self._parse_answer(answer)
+            if not match:
+                continue
+            results.append(
+                QueryResult(
+                    track_id=package.track_id,
+                    start_s=package.start_time_seconds,
+                    end_s=package.end_time_seconds,
+                    score=score,
+                    reason=reason,
+                )
+            )
         return results
 
     def _build_messages(
