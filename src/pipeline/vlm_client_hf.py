@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import concurrent.futures
 from pathlib import Path
 from typing import Iterable, List, Tuple
+import time
 
 import numpy as np
 from PIL import Image
@@ -91,10 +92,11 @@ class Qwen3VL4BHFClient:
                     {
                         "type": "text",
                         "text": (
-                        "You are an assistant summarizing video retrieval results. "
-                        "Given the original question and the shortlisted tracks with reasons, "
-                        "provide a concise final answer in English that tells the user which tracks match. "
-                        "If none, say no match."
+                            "You are an assistant summarizing video retrieval results. "
+                            "Given the original question and the shortlisted tracks with reasons, "
+                            "return a single concise answer (1-2 sentences) in English. "
+                            "Do NOT repeat per-track bullet points; synthesize the conclusion "
+                            "and mention track IDs briefly. If none match, say no match."
                         ),
                     }
                 ],
@@ -118,7 +120,7 @@ class Qwen3VL4BHFClient:
         with self._torch.no_grad():
             generated = self.model.generate(
                 **inputs,
-                max_new_tokens=128,
+                max_new_tokens=80,
                 temperature=self.temperature,
             )
         trimmed = [
@@ -140,11 +142,13 @@ class Qwen3VL4BHFClient:
         results: List[QueryResult] = []
         batch_messages: list[list[dict]] = []
         batch_packages: list[EvidencePackage] = []
+        t_start = time.monotonic()
 
         def flush_batch() -> bool:
             """Run one VLM batch and append matches to results. Returns True if top_k reached."""
             if not batch_messages:
                 return False
+            t_batch_start = time.monotonic()
             try:
                 batch_answers = self._run_batch_inference(batch_messages)
             except Exception as exc:
@@ -152,6 +156,11 @@ class Qwen3VL4BHFClient:
                 batch_messages.clear()
                 batch_packages.clear()
                 return False
+            t_batch_end = time.monotonic()
+            print(
+                f"[HF VLM] batch size={len(batch_messages)} time={t_batch_end - t_batch_start:.2f}s "
+                f"(total so far {t_batch_end - t_start:.2f}s)"
+            )
 
             for package, answer_text in zip(batch_packages, batch_answers):
                 match, score, reason = self._parse_answer(answer_text)
@@ -192,6 +201,7 @@ class Qwen3VL4BHFClient:
 
         if batch_messages and (top_k is None or len(results) < top_k):
             flush_batch()
+        print(f"[HF VLM] total time={time.monotonic() - t_start:.2f}s for {len(results)} matches")
 
         return results
 
