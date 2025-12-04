@@ -66,8 +66,8 @@ class Qwen3VL4BHFClient:
         # 按官方 README 推荐：dtype=\"auto\" + device_map=\"auto\"
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
             repo_id,
-            dtype="auto",
-            device_map="auto",
+            torch_dtype=getattr(torch, "float16", None) or "auto",
+            device_map={"": "cuda"},
         )
         print(f"[HF VLM] device map: {getattr(self.model, 'hf_device_map', 'n/a')}")
         self.temperature = self.config.vlm_temperature
