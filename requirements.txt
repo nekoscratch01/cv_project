@@ -42,4 +42,3 @@ qwen-vl-utils
 openai>=1.37.0
 einops
 timm
-flash-attn>=2.5.8

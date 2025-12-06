@@ -3,20 +3,21 @@
 
 set -euo pipefail
 
-# 强制使用 flash-attn；若缺失则终止并提示安装
-python - <<'PY'
+# 尝试使用 flash-attn；若缺失则回退 torch SDPA，并提示未来可安装加速。
+if python - <<'PY'
 import importlib.util, sys
-if importlib.util.find_spec("flash_attn") is None:
-    sys.stderr.write(
-        "[ERROR] flash-attn not installed. Install first, e.g.:\n"
-        "pip install \"flash-attn>=2.5.8\" --no-build-isolation\n"
-    )
-    sys.exit(1)
+sys.exit(0 if importlib.util.find_spec("flash_attn") else 1)
 PY
-
-export VLLM_USE_FLASH_ATTENTION=1
-export VLLM_ATTENTION_BACKEND=flash
-echo "[vLLM] flash-attn detected, using flash backend."
+then
+  export VLLM_USE_FLASH_ATTENTION=1
+  export VLLM_ATTENTION_BACKEND=flash
+  echo "[vLLM] flash-attn detected, using flash backend."
+else
+  export VLLM_USE_FLASH_ATTENTION=0
+  export VLLM_ATTENTION_BACKEND=torch
+  echo "[vLLM] flash-attn not found, fallback to torch backend. Install later for better throughput:"
+  echo "pip install \"flash-attn>=2.5.8\" --no-build-isolation"
+fi
 
 python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen3-VL-4B-Instruct \
