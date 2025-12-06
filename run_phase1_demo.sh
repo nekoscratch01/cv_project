@@ -5,12 +5,14 @@ set -euo pipefail
 export PYTHONPATH="$(pwd)/src"
 
 python - <<'PY'
+from pathlib import Path
+
 from core.config import SystemConfig
 from pipeline.video_semantic_search import VideoSemanticSystem
 
 config = SystemConfig(
-    video_path="data/raw/semantic/MOT17-12.mp4",
-    output_dir="output/demo_run",
+    video_path=Path("data/raw/semantic/MOT17-12.mp4"),
+    output_dir=Path("output/demo_run"),
     vlm_backend="vllm",
     vllm_endpoint="http://localhost:8000/v1",
     vllm_model_name="Qwen/Qwen3-VL-4B-Instruct",
