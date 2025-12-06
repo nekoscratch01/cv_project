@@ -22,8 +22,10 @@ class SystemConfig:
     sample_interval: int = 5   # 更稀疏存图，聚焦关键帧
     min_track_length: int = 15  # 过滤闪烁短轨迹
 
-    # Semantic / VLM (v7 默认：单 Qwen3‑VL‑4B，经 transformers；保留 llama-cpp 接口)
-    vlm_backend: str = "hf"  # 允许显式设为 "llama_cpp" 以备未来扩展
+    # Semantic / VLM (Phase1: 默认 vLLM 服务，可回退 transformers)
+    vlm_backend: str = "vllm"  # "vllm" | "hf" | "transformers" | "llama_cpp"
+    vllm_endpoint: str = "http://localhost:8000/v1"
+    vllm_model_name: str = "Qwen/Qwen3-VL-4B-Instruct"
     vlm_gguf_path: Path | None = None
     vlm_context_size: int = 8192
     vlm_gpu_layers: int = -1

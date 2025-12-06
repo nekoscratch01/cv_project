@@ -9,6 +9,7 @@ Pipeline:
 from __future__ import annotations
 
 import json
+import asyncio
 from pathlib import Path
 
 from core.config import SystemConfig
@@ -17,6 +18,7 @@ from core.features import TrackFeatureExtractor
 from core.evidence import build_evidence_packages
 from pipeline.recall import RecallEngine
 from core.hard_rules import HardRuleEngine
+from core.vlm_types import QueryResult
 from typing import Any
 
 VERSION = "v2.1"
@@ -293,7 +295,7 @@ class VideoSemanticSystem:
             return []
 
         # Step 2: VLM精排阶段（AI判断）
-        vlm_results = self.vlm_client.answer(question, candidates, plan=plan)
+        vlm_results = self._run_vlm_verification(question, candidates, plan, top_k=top_k)
         if not vlm_results:
             print("   ❌ No matching tracks")
             return []
@@ -354,6 +356,61 @@ class VideoSemanticSystem:
 
         return selected
 
+    def _run_vlm_verification(self, question: str, candidates, plan, top_k: int | None):
+        """
+        在 vLLM 适配器（InferencePort）与旧版 HF 客户端之间做桥接。
+        """
+        if hasattr(self.vlm_client, "verify_batch"):
+            plan_context = self._build_plan_context(plan)
+            verifications = self._run_coroutine(
+                self.vlm_client.verify_batch(
+                    packages=candidates,
+                    question=question,
+                    plan_context=plan_context,
+                    concurrency=getattr(self.config, "vlm_batch_size", 10),
+                )
+            )
+            results: list[QueryResult] = []
+            for package, verdict in zip(candidates, verifications):
+                if not verdict.is_match:
+                    continue
+                results.append(
+                    QueryResult(
+                        track_id=package.track_id,
+                        start_s=package.start_time_seconds,
+                        end_s=package.end_time_seconds,
+                        score=verdict.confidence,
+                        reason=verdict.reason,
+                    )
+                )
+                if top_k is not None and len(results) >= top_k:
+                    break
+            return results
+
+        # 兼容旧 HF 客户端接口
+        return self.vlm_client.answer(question, candidates, plan=plan, top_k=top_k)  # type: ignore[no-any-return]
+
+    @staticmethod
+    def _build_plan_context(plan) -> str:
+        try:
+            return json.dumps(plan.to_dict(), ensure_ascii=False)
+        except Exception:
+            return ""
+
+    def _run_coroutine(self, coro):
+        try:
+            return asyncio.run(coro)
+        except RuntimeError as exc:
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                raise
+            if loop.is_running():
+                raise RuntimeError(
+                    "vLLM verification requires a non-async context; please call the async adapter directly."
+                ) from exc
+            return loop.run_until_complete(coro)
+
     def _ensure_hard_rule_engine(self) -> HardRuleEngine:
         if self.hard_rule_engine is None:
             if self.metadata is None:
@@ -373,12 +430,19 @@ class VideoSemanticSystem:
         raise RuntimeError(f"Unknown router_backend: {self.config.router_backend!r}")
 
     def _build_vlm_client(self):
-        if self.config.vlm_backend in {"hf", "transformers", "llama_cpp"}:
-            from pipeline.vlm_client_hf import Qwen3VL4BHFClient
+        if self.config.vlm_backend != "vllm":
+            raise RuntimeError("vlm_backend must be 'vllm' (no downgrade fallback).")
 
-            return Qwen3VL4BHFClient(self.config)
-        raise RuntimeError(
-            "Only vlm_backend in {'hf', 'transformers', 'llama_cpp'} is supported; legacy GGUF/2B paths removed."
+        from adapters.inference.vllm_adapter import VllmAdapter, VllmConfig
+
+        return VllmAdapter(
+            VllmConfig(
+                endpoint=self.config.vllm_endpoint,
+                model_name=self.config.vllm_model_name,
+                temperature=self.config.vlm_temperature,
+                max_tokens=self.config.vlm_max_new_tokens,
+                max_images_per_request=getattr(self.config, "vlm_batch_size", 5),
+            )
         )
 
     def _persist_database(self) -> None:

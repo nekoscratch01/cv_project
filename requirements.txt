@@ -22,3 +22,21 @@ boxmot>=10.0.0              # ByteTrack等跟踪算法
 # 语义查询（Stage 4）
 transformers>=4.37.0        # CLIP等预训练模型
 huggingface_hub>=0.23.0     # 自动下载 HF 模型资产
+
+# API / orchestration / testing
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+celery>=5.3.0
+redis>=5.0.0
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+structlog>=24.0.0
+pytest>=8.1.0
+pytest-asyncio>=0.23.0
+
+# VLM / vLLM
+vllm>=0.6.0
+qwen-vl-utils
+openai>=1.37.0
+einops
+timm
