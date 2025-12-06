@@ -421,12 +421,9 @@ class VideoSemanticSystem:
         return self.hard_rule_engine
 
     def _build_router(self):
-        if self.config.router_backend in {"hf", "transformers", "llama_cpp"}:
-            from pipeline.router_llm import HFRouter
-            from pipeline.vlm_client_hf import Qwen3VL4BHFClient
-
-            hf_client = self.vlm_client if isinstance(self.vlm_client, Qwen3VL4BHFClient) else None
-            return HFRouter(self.config, hf_client=hf_client)
+        if self.config.router_backend == "simple":
+            from pipeline.router import SimpleRouter
+            return SimpleRouter()
         raise RuntimeError(f"Unknown router_backend: {self.config.router_backend!r}")
 
     def _build_vlm_client(self):

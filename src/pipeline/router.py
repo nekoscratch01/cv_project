@@ -12,6 +12,12 @@ DEFAULT_VERIFICATION_PROMPT = (
     "Given the original question, is this track a plausible match? Answer Yes or No."
 )
 
+class SimpleRouter:
+    """Minimal router that echoes the question into an ExecutionPlan."""
+
+    def build_plan(self, question: str) -> ExecutionPlan:
+        return ExecutionPlan(description=question or "a person")
+
 
 @dataclass
 class ExecutionPlan:

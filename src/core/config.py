@@ -22,8 +22,8 @@ class SystemConfig:
     sample_interval: int = 5   # 更稀疏存图，聚焦关键帧
     min_track_length: int = 15  # 过滤闪烁短轨迹
 
-    # Semantic / VLM (Phase1: 默认 vLLM 服务，可回退 transformers)
-    vlm_backend: str = "vllm"  # "vllm" | "hf" | "transformers" | "llama_cpp"
+    # Semantic / VLM (Phase1: 默认 vLLM 服务)
+    vlm_backend: str = "vllm"  # 强制 vLLM
     vllm_endpoint: str = "http://localhost:8000/v1"
     vllm_model_name: str = "Qwen/Qwen3-VL-4B-Instruct"
     vlm_gguf_path: Path | None = None
@@ -33,8 +33,8 @@ class SystemConfig:
     vlm_temperature: float = 0.1
     vlm_max_new_tokens: int = 256
     vlm_batch_size: int = 4
-    # Router 默认也使用同一个 4B 模型；当前实现仅提供 transformers 版本
-    router_backend: str = "hf"  # 允许保留 "llama_cpp" 占位
+    # Router 默认改为轻量 simple（避免 transformers 依赖）
+    router_backend: str = "simple"
     router_gguf_path: Path | None = None
     router_max_new_tokens: int = 256
     router_temperature: float = 0.2

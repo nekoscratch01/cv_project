@@ -1,7 +1,22 @@
 #!/bin/bash
-# vLLM 服务启动脚本（Qwen2-VL-7B-Instruct，FP16 基础版）
+# vLLM 服务启动脚本（Qwen3-VL-4B-Instruct，FP16 基础版）
 
 set -euo pipefail
+
+# 强制使用 flash-attn；若缺失则终止并提示安装
+python - <<'PY'
+import importlib.util, sys
+if importlib.util.find_spec("flash_attn") is None:
+    sys.stderr.write(
+        "[ERROR] flash-attn not installed. Install first, e.g.:\n"
+        "pip install \"flash-attn>=2.5.8\" --no-build-isolation\n"
+    )
+    sys.exit(1)
+PY
+
+export VLLM_USE_FLASH_ATTENTION=1
+export VLLM_ATTENTION_BACKEND=flash
+echo "[vLLM] flash-attn detected, using flash backend."
 
 python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen3-VL-4B-Instruct \
