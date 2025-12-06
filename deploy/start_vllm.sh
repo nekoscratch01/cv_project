@@ -3,21 +3,14 @@
 
 set -euo pipefail
 
-# 尝试使用 flash-attn；若缺失则回退 torch SDPA，并提示未来可安装加速。
-if python - <<'PY'
-import importlib.util, sys
-sys.exit(0 if importlib.util.find_spec("flash_attn") else 1)
-PY
-then
-  export VLLM_USE_FLASH_ATTENTION=1
-  export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-  echo "[vLLM] flash-attn detected, using FLASH_ATTN backend."
-else
-  export VLLM_USE_FLASH_ATTENTION=0
-  export VLLM_ATTENTION_BACKEND=TORCH_SDPA
-  echo "[vLLM] flash-attn not found, fallback to TORCH_SDPA. Install later for better throughput:"
-  echo "pip install \"flash-attn>=2.5.8\" --no-build-isolation"
-fi
+# 固定禁用 flash-attn（避免编译或缺失时崩溃），使用 PyTorch SDPA。
+# 如需开启 flash-attn 加速，未来手动改为：
+#   export VLLM_USE_FLASH_ATTENTION=1
+#   export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+# 并确保已安装 flash-attn（pip install "flash-attn>=2.5.8" --no-build-isolation）
+export VLLM_USE_FLASH_ATTENTION=0
+export VLLM_ATTENTION_BACKEND=TORCH_SDPA
+echo "[vLLM] flash-attn disabled; using TORCH_SDPA backend. To enable later: set VLLM_USE_FLASH_ATTENTION=1 and VLLM_ATTENTION_BACKEND=FLASH_ATTN (after installing flash-attn)."
 
 python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen3-VL-4B-Instruct \
