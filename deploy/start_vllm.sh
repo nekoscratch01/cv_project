@@ -10,7 +10,7 @@ python -m vllm.entrypoints.openai.api_server \
     --port 8000 \
     --gpu-memory-utilization 0.90 \
     --max-model-len 8192 \
-    --limit-mm-per-prompt image=5 \
+    --limit-mm-per-prompt '{"image":5}' \
     --enable-prefix-caching
 
 # 量化版本示例（AWQ），需要对应模型
