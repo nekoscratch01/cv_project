@@ -10,12 +10,12 @@ sys.exit(0 if importlib.util.find_spec("flash_attn") else 1)
 PY
 then
   export VLLM_USE_FLASH_ATTENTION=1
-  export VLLM_ATTENTION_BACKEND=flash
-  echo "[vLLM] flash-attn detected, using flash backend."
+  export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+  echo "[vLLM] flash-attn detected, using FLASH_ATTN backend."
 else
   export VLLM_USE_FLASH_ATTENTION=0
-  export VLLM_ATTENTION_BACKEND=torch
-  echo "[vLLM] flash-attn not found, fallback to torch backend. Install later for better throughput:"
+  export VLLM_ATTENTION_BACKEND=TORCH_SDPA
+  echo "[vLLM] flash-attn not found, fallback to TORCH_SDPA. Install later for better throughput:"
   echo "pip install \"flash-attn>=2.5.8\" --no-build-isolation"
 fi
 
