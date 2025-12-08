@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import inspect
 from pathlib import Path
 
 from core.config import SystemConfig
@@ -179,7 +180,11 @@ class VideoSemanticSystem:
         # 证据层：打包所有信息
         video_id = Path(self.config.video_path).stem  # 提取文件名作为video_id
         self.evidence_map = build_evidence_packages(
-            video_id, self.track_records, self.metadata, self.features
+            video_id,
+            self.track_records,
+            self.metadata,
+            self.features,
+            video_path=str(self.config.video_path),
         )
         print(f"   ✅ Built {len(self.evidence_map)} evidence packages")
 
@@ -207,12 +212,6 @@ class VideoSemanticSystem:
             - 输出：匹配的轨迹 + 分数 + 理由
             - 目的：准确判断哪些人符合描述
         
-        Step 3: 排序与截断（Sort & Select）
-            - 输入：所有VLM匹配结果
-            - 处理：按分数排序，取前 top_k 个
-            - 输出：最终匹配列表
-            - 目的：只返回最相关的前几个结果
-        
         Step 4: 可视化（Visualization）
             - 输入：匹配的track_id列表
             - 处理：在原视频上画红框
@@ -224,16 +223,13 @@ class VideoSemanticSystem:
                      例如："找出穿紫色衣服的人"
                           "找戴牛仔帽的人"
                           "找背圆形背包的人"
-            top_k: 最多返回几个匹配结果，默认5个
-                  即使VLM找到10个匹配，也只返回分数最高的前5个
             recall_limit: 召回阶段的候选数量限制（可选）
                          例如：recall_limit=20 表示最多给VLM看20个候选
                          如果为 None，Phase 1会返回所有轨迹
         
         Returns:
-            匹配结果列表，格式：[QueryResult, QueryResult, ...]
+            匹配结果列表，格式：[QueryResult, QueryResult, ...]（全部匹配，不截断）
             每个结果包含：track_id, start_s, end_s, score, reason
-            列表按分数降序排列（分数最高的在前）
             如果没找到匹配，返回空列表 []
         
         Raises:
@@ -271,11 +267,12 @@ class VideoSemanticSystem:
         print(f"Query: {question}")
 
         plan = self.router.build_plan(question)
+        if inspect.isawaitable(plan):
+            plan = self._run_coroutine(plan)
         print("   🧭 Routing plan:", plan.to_dict())
 
         # Step 1: 召回阶段（筛选候选）
         all_tracks = list(self.evidence_map.values())
-        # 放宽召回：默认看全量，避免目标被 limit 过滤掉
         recall_top_k = recall_limit or len(all_tracks)
         plan.constraints["limit"] = len(all_tracks)
         candidates = self.recall_engine.visual_filter(
@@ -295,44 +292,35 @@ class VideoSemanticSystem:
             return []
 
         # Step 2: VLM精排阶段（AI判断）
-        vlm_results = self._run_vlm_verification(question, candidates, plan, top_k=top_k)
+        vlm_results = self._run_vlm_verification(question, candidates, plan, top_k=None)
         if not vlm_results:
             print("   ❌ No matching tracks")
             return []
 
-        # Step 3: 排序与截断
-        vlm_results.sort(key=lambda r: r.score, reverse=True)  # 按分数降序
-        selected = vlm_results[:top_k]  # 取前 top_k 个
-
-        # 打印匹配结果
-        print("   ✅ VLM matches:")
-        for item in selected:
+        # Step 3: 保留全部匹配（不截断），仅用于展示排序
+        vlm_results.sort(key=lambda r: r.score, reverse=True)
+        matches = vlm_results
+        print("   ✅ VLM matches (all is_match):")
+        for item in matches:
             print(
-                f"      - Track {item.track_id}: {item.start_s:.1f}s → {item.end_s:.1f}s | reason: {item.reason}"
+                f"      - Track {item.track_id}: {item.start_s:.1f}s → {item.end_s:.1f}s | score={item.score:.2f} | reason: {item.reason}"
             )
 
-        # 汇总一句话回答：用同一 4B VLM 生成最终答复
-        final_answer = ""
-        if hasattr(self.vlm_client, "compose_final_answer"):
-            try:
-                final_answer = self.vlm_client.compose_final_answer(question, selected)  # type: ignore
-            except Exception as exc:  # noqa: BLE001
-                print(f"   ⚠️  Failed to compose final answer: {exc}")
-        if not final_answer:
-            if selected:
-                summary_text = ", ".join(
-                    f"track {item.track_id} ({item.start_s:.1f}s–{item.end_s:.1f}s)" for item in selected
-                )
-                final_answer = f"Most likely matches: {summary_text}."
-            else:
-                final_answer = "No matching tracks found."
+        # 汇总一句话回答
+        if matches:
+            summary_parts = [
+                f"track {m.track_id} ({m.start_s:.1f}s–{m.end_s:.1f}s): {m.reason}"
+                for m in matches
+            ]
+            final_answer = f"Found {len(matches)} matches. " + " | ".join(summary_parts)
+        else:
+            final_answer = "No matching tracks found."
         print(f"\n📝 Final answer: {final_answer}")
 
-        # Step 4: 可视化（画红框视频）
-        track_ids = [item.track_id for item in selected]
+        # Step 4: 可视化（仅高亮匹配轨迹）
+        track_ids = [item.track_id for item in matches]
         safe_name = question.replace(" ", "_")  # 空格替换成下划线
         video_output = self.config.output_dir / f"tracking_{safe_name}.mp4"
-        # 渲染最终匹配
         self.perception.render_highlight_video(
             self.track_records,
             self.metadata,
@@ -354,7 +342,7 @@ class VideoSemanticSystem:
         print(f"   🎞️ Result video: {video_output}")
         print(f"   🎞️ All-tracks video: {debug_output}")
 
-        return selected
+        return matches
 
     def _run_vlm_verification(self, question: str, candidates, plan, top_k: int | None):
         """
@@ -362,29 +350,30 @@ class VideoSemanticSystem:
         """
         if hasattr(self.vlm_client, "verify_batch"):
             plan_context = self._build_plan_context(plan)
-            verifications = self._run_coroutine(
-                self.vlm_client.verify_batch(
-                    packages=candidates,
-                    question=question,
-                    plan_context=plan_context,
-                    concurrency=getattr(self.config, "vlm_batch_size", 10),
-                )
-            )
             results: list[QueryResult] = []
-            for package, verdict in zip(candidates, verifications):
-                if not verdict.is_match:
-                    continue
-                results.append(
-                    QueryResult(
-                        track_id=package.track_id,
-                        start_s=package.start_time_seconds,
-                        end_s=package.end_time_seconds,
-                        score=verdict.confidence,
-                        reason=verdict.reason,
+            batch_size = max(1, min(3, getattr(self.config, "vlm_batch_size", 3)))
+            for i in range(0, len(candidates), batch_size):
+                chunk = candidates[i : i + batch_size]
+                verifications = self._run_coroutine(
+                    self.vlm_client.verify_batch(
+                        packages=chunk,
+                        question=question,
+                        plan_context=plan_context,
+                        concurrency=batch_size,
                     )
                 )
-                if top_k is not None and len(results) >= top_k:
-                    break
+                for package, verdict in zip(chunk, verifications):
+                    if not verdict.is_match:
+                        continue
+                    results.append(
+                        QueryResult(
+                            track_id=package.track_id,
+                            start_s=package.start_time_seconds,
+                            end_s=package.end_time_seconds,
+                            score=verdict.confidence,
+                            reason=verdict.reason,
+                        )
+                    )
             return results
 
         # 兼容旧 HF 客户端接口
@@ -424,6 +413,10 @@ class VideoSemanticSystem:
         if self.config.router_backend == "simple":
             from pipeline.router import SimpleRouter
             return SimpleRouter()
+        if self.config.router_backend == "vllm":
+            from pipeline.router_vlm import VlmRouter
+
+            return VlmRouter(base_url=self.config.vllm_endpoint, model=self.config.vllm_model_name)
         raise RuntimeError(f"Unknown router_backend: {self.config.router_backend!r}")
 
     def _build_vlm_client(self):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.features import TrackFeatures
@@ -40,6 +41,7 @@ class EvidencePackage:
         print(f"平均速度: {package.motion.avg_speed_px_s:.1f} 像素/秒")
     """
     video_id: str
+    video_path: str = ""
     track_id: int
     frames: List[int]
     bboxes: List[Tuple[int, int, int, int]]
@@ -114,6 +116,7 @@ def build_evidence_packages(
     track_records: Dict[int, TrackRecord],
     metadata: VideoMetadata,
     features: Dict[int, TrackFeatures],
+    video_path: str | Path = "",
 ) -> Dict[int, EvidencePackage]:
     """
     构建证据包字典：把分散的数据打包成统一格式。
@@ -160,6 +163,7 @@ def build_evidence_packages(
     for track_id, record in track_records.items():
         packages[track_id] = EvidencePackage(
             video_id=video_id,
+            video_path=str(video_path) if video_path else "",
             track_id=track_id,
             frames=list(record.frames),       # 复制列表，避免引用
             bboxes=list(record.bboxes),       # 复制列表

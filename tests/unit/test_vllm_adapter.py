@@ -44,19 +44,25 @@ class TestVlmResponseParser:
 
 
 @pytest.mark.asyncio
-async def test_verify_track(adapter):
-    # Mock the OpenAI response
+async def test_verify_batch(adapter):
     mock_response = MagicMock()
     mock_choice = MagicMock()
-    mock_choice.message.content = "MATCH: yes"
+    mock_choice.message.content = '{"1": {"match": true, "reason": "ok"}}'
     mock_response.choices = [mock_choice]
     adapter.client.chat.completions.create = AsyncMock(return_value=mock_response)
 
-    mock_package = MagicMock()
-    mock_package.crops = ["path/to/image.jpg"]
-    mock_package.features = None
+    pkg = MagicMock()
+    pkg.track_id = 1
+    pkg.frames = [0, 1, 2]
+    pkg.bboxes = [(0, 0, 10, 10)]
+    pkg.video_path = "/tmp/fake.mp4"
+    pkg.meta = {"resolution": (1920, 1080)}
+    pkg.features = MagicMock(
+        norm_speed=0.5, linearity=0.9, scale_change=1.0, displacement_vec=(1, 0), duration_s=1.0
+    )
 
-    with patch.object(adapter, "_encode_image", return_value="base64data"):
-        result = await adapter.verify_track(mock_package, "test question")
+    with patch.object(adapter, "_extract_frames", return_value=(["imgb64"], (1920, 1080))):
+        results = await adapter.verify_batch([pkg], "test question")
 
-    assert result.is_match is True
+    assert len(results) == 1
+    assert results[0].is_match is True
