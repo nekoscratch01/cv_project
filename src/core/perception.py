@@ -218,23 +218,20 @@ class VideoPerception:
 
         cap = cv2.VideoCapture(str(self.config.video_path))
 
-        # 优先尝试使用 avc1（H.264），兼容性更好；如果失败再退回到 mp4v
-        fourcc = cv2.VideoWriter_fourcc(*"avc1")
-        out = cv2.VideoWriter(
-            str(output_path), fourcc, metadata.fps, (metadata.width, metadata.height)
-        )
+        # 先用 mp4v（OpenCV 默认最稳定的 MP4 编码），失败再尝试 avc1
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(str(output_path), fourcc, metadata.fps, (metadata.width, metadata.height))
         if not out.isOpened():
-            print("   ⚠️ Failed to open avc1 encoder, trying mp4v ...")
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out = cv2.VideoWriter(
-                str(output_path), fourcc, metadata.fps, (metadata.width, metadata.height)
-            )
+            print("   ⚠️ Failed to open mp4v encoder, trying avc1 ...")
+            fourcc = cv2.VideoWriter_fourcc(*"avc1")
+            out = cv2.VideoWriter(str(output_path), fourcc, metadata.fps, (metadata.width, metadata.height))
         if not out.isOpened():
             print(f"   ❌ Cannot create output video file: {output_path}")
             cap.release()
             return
 
         frame_idx = 0
+        written = 0
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -273,6 +270,9 @@ class VideoPerception:
                 )
 
             out.write(frame)
+            written += 1
 
         cap.release()
         out.release()
+        if written == 0:
+            print(f"   ⚠️ Video {output_path} has 0 frames written; player may not open it.")
