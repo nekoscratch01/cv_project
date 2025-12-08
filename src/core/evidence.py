@@ -41,12 +41,12 @@ class EvidencePackage:
         print(f"平均速度: {package.motion.avg_speed_px_s:.1f} 像素/秒")
     """
     video_id: str
-    video_path: str = ""
     track_id: int
     frames: List[int]
     bboxes: List[Tuple[int, int, int, int]]
     crops: List[str]
     fps: float
+    video_path: str = ""
     features: Optional[TrackFeatures] = None
     meta: Optional[Dict[str, Any]] = None
     raw_trace: Optional[List[Tuple[int, int, int, int]]] = None
