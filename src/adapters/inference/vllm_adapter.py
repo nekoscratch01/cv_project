@@ -311,6 +311,10 @@ class VllmAdapter:
                     results[str(key)] = VerificationResult.confirmed(conf or 0.8, reason, raw=text)
                 else:
                     results[str(key)] = VerificationResult.rejected(reason or "No match", raw=text)
+            # 标记缺失的 ID，避免误判请求缺失
+            for tid in expected_ids:
+                if str(tid) not in results:
+                    results[str(tid)] = VerificationResult.error("Missing result in JSON")
             if results:
                 return results
         except Exception:

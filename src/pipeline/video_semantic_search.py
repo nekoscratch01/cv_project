@@ -295,6 +295,30 @@ class VideoSemanticSystem:
         vlm_results = self._run_vlm_verification(question, candidates, plan, top_k=None)
         if not vlm_results:
             print("   ❌ No matching tracks")
+            # 仍然输出调试视频，方便人工核验候选/全量轨迹
+            safe_name = question.replace(" ", "_")
+            candidate_ids = [c.track_id for c in candidates]
+            video_output = self.config.output_dir / f"tracking_{safe_name}.mp4"
+            debug_output = self.config.output_dir / f"tracking_all_tracks_{safe_name}.mp4"
+            # 高亮候选（即 HardRule 之后的集合），便于查看为什么 VLM 全拒绝
+            self.perception.render_highlight_video(
+                self.track_records,
+                self.metadata,
+                candidate_ids,
+                video_output,
+                label_text=f"candidates: {question}",
+            )
+            # 全轨迹调试视频
+            all_track_ids = list(self.track_records.keys())
+            self.perception.render_highlight_video(
+                self.track_records,
+                self.metadata,
+                all_track_ids,
+                debug_output,
+                label_text="all tracks",
+            )
+            print(f"   🎞️ Candidate video: {video_output}")
+            print(f"   🎞️ All-tracks video: {debug_output}")
             return []
 
         # Step 3: 保留全部匹配（不截断），仅用于展示排序
