@@ -298,14 +298,35 @@ class VideoSemanticSystem:
         vlm_results = self._run_vlm_verification(question, candidates, plan, top_k=None)
         if not vlm_results:
             print("   ❌ No matching tracks")
-            # 输出空白视频（原视频拷贝），不再强行画框
             safe_name = question.replace(" ", "_")
             video_output = self.config.output_dir / f"tracking_{safe_name}.mp4"
             debug_output = self.config.output_dir / f"tracking_all_tracks_{safe_name}.mp4"
-            self._write_raw_video(video_output)
-            self._write_raw_video(debug_output)
-            print(f"   🎞️ Raw video (no highlights): {video_output}")
-            print(f"   🎞️ Raw video copy: {debug_output}")
+
+            # 候选高亮（如果有候选则画框，没有则跳过）
+            candidate_ids = [c.track_id for c in candidates]
+            if candidate_ids:
+                self.perception.render_highlight_video(
+                    self.track_records,
+                    self.metadata,
+                    candidate_ids,
+                    video_output,
+                    label_text=f"candidates: {question}",
+                )
+                print(f"   🎞️ Candidate video: {video_output}")
+            else:
+                self._write_raw_video(video_output)
+                print(f"   🎞️ Candidate video (raw, no candidates): {video_output}")
+
+            # 全轨迹调试：总是画出所有轨迹，便于比对
+            all_track_ids = list(self.track_records.keys())
+            self.perception.render_highlight_video(
+                self.track_records,
+                self.metadata,
+                all_track_ids,
+                debug_output,
+                label_text="all tracks",
+            )
+            print(f"   🎞️ All-tracks video: {debug_output}")
             return []
 
         # Step 3: 保留全部匹配（不截断），仅用于展示排序
