@@ -95,7 +95,7 @@ class VllmAdapter:
                 messages = self._build_messages(batch, question, frames_b64, res_info, plan_context)
                 print(
                     f"[VLM DEBUG] sending batch size={len(batch)} frames={len(frames_b64)} "
-                    f"endpoint={self.config.endpoint} model={self.config.model_name}"
+                    f"endpoint={self.config.endpoint} model={self.config.model_name} ids={[p.track_id for p in batch]}"
                 )
                 response = await self.client.chat.completions.create(
                     model=self.config.model_name,

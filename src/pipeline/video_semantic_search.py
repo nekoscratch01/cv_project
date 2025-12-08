@@ -12,6 +12,7 @@ import json
 import asyncio
 import inspect
 from pathlib import Path
+import cv2
 
 from core.config import SystemConfig
 from core.perception import VideoPerception
@@ -287,6 +288,8 @@ class VideoSemanticSystem:
         hard_engine = self._ensure_hard_rule_engine()
         candidates = hard_engine.apply_constraints(candidates, plan)
         print(f"   📐 After hard rules: {len(candidates)}")
+        if candidates:
+            print(f"   🔢 Candidate IDs: {', '.join(str(c.track_id) for c in candidates)}")
         if not candidates:
             print("   ❌ No candidates after hard rules")
             return []
@@ -295,30 +298,14 @@ class VideoSemanticSystem:
         vlm_results = self._run_vlm_verification(question, candidates, plan, top_k=None)
         if not vlm_results:
             print("   ❌ No matching tracks")
-            # 仍然输出调试视频，方便人工核验候选/全量轨迹
+            # 输出空白视频（原视频拷贝），不再强行画框
             safe_name = question.replace(" ", "_")
-            candidate_ids = [c.track_id for c in candidates]
             video_output = self.config.output_dir / f"tracking_{safe_name}.mp4"
             debug_output = self.config.output_dir / f"tracking_all_tracks_{safe_name}.mp4"
-            # 高亮候选（即 HardRule 之后的集合），便于查看为什么 VLM 全拒绝
-            self.perception.render_highlight_video(
-                self.track_records,
-                self.metadata,
-                candidate_ids,
-                video_output,
-                label_text=f"candidates: {question}",
-            )
-            # 全轨迹调试视频
-            all_track_ids = list(self.track_records.keys())
-            self.perception.render_highlight_video(
-                self.track_records,
-                self.metadata,
-                all_track_ids,
-                debug_output,
-                label_text="all tracks",
-            )
-            print(f"   🎞️ Candidate video: {video_output}")
-            print(f"   🎞️ All-tracks video: {debug_output}")
+            self._write_raw_video(video_output)
+            self._write_raw_video(debug_output)
+            print(f"   🎞️ Raw video (no highlights): {video_output}")
+            print(f"   🎞️ Raw video copy: {debug_output}")
             return []
 
         # Step 3: 保留全部匹配（不截断），仅用于展示排序
@@ -423,6 +410,33 @@ class VideoSemanticSystem:
                     "vLLM verification requires a non-async context; please call the async adapter directly."
                 ) from exc
             return loop.run_until_complete(coro)
+
+    def _write_raw_video(self, output_path: Path) -> None:
+        """把原视频直接拷贝为 MP4（无任何标注），用于空结果时的占位输出。"""
+        cap = cv2.VideoCapture(str(self.config.video_path))
+        if not cap.isOpened():
+            print(f"   ⚠️ Cannot open video for copy: {self.config.video_path}")
+            return
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = self.metadata.fps if self.metadata else cap.get(cv2.CAP_PROP_FPS) or 25.0
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+        if not out.isOpened():
+            print(f"   ⚠️ Cannot create raw video file: {output_path}")
+            cap.release()
+            return
+        frames = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            out.write(frame)
+            frames += 1
+        cap.release()
+        out.release()
+        if frames == 0:
+            print(f"   ⚠️ Raw video copy has 0 frames: {output_path}")
 
     def _ensure_hard_rule_engine(self) -> HardRuleEngine:
         if self.hard_rule_engine is None:
