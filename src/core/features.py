@@ -167,8 +167,8 @@ class TrackFeatureExtractor:
 
             # 线性度：位移 / 路径长度，极短路径视为徘徊
             linearity = 0.0
-            if path_length_px >= 50.0:
-                linearity = float(math.hypot(*displacement_vec)) / max(path_length_px, 1.0)
+            if total_length >= 50.0:
+                linearity = float(math.hypot(*displacement_vec)) / max(total_length, 1.0)
 
             # 尺度变化：前5帧平均面积 vs 后5帧平均面积，平滑抖动
             head_area = np.mean(areas[:5]) if areas else 1.0
