@@ -30,7 +30,7 @@ class VllmConfig:
     endpoint: str = "http://localhost:8000/v1"
     model_name: str = "Qwen/Qwen3-VL-4B-Instruct"
     temperature: float = 0.1
-    max_tokens: int = 256
+    max_tokens: int = 1024  # 提高生成上限，避免批量回答被截断
     timeout: float = 120.0
     max_retries: int = 3
     max_images_per_request: int = 5
@@ -41,8 +41,11 @@ class VllmConfig:
 SYSTEM_PROMPT = (
     "You are an intelligent video surveillance analyst. "
     "You will be provided with video frames and multiple candidate targets. "
-    "For each target, focus ONLY on the region specified by its bounding box and the provided motion telemetry. "
-    "Return a clear MATCH decision with a concise reason for each target."
+    "Instructions: "
+    "1) Focus STRICTLY on the pixels inside each target's bounding box. "
+    "2) VISUAL PRIORITY: If the query only describes appearance (e.g., 'blue shirt'), IGNORE motion telemetry inconsistencies "
+    "(like running vs. walking). Only use motion if the query explicitly asks for an action. "
+    "3) Be concise and output clear MATCH decisions with reasons."
 )
 
 
