@@ -3,8 +3,6 @@
 
 set -euo pipefail
 
-# 默认使用 PyTorch SDPA 后端；如安装 flash-attn 后可改为 --attention-backend flash
-
 python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen3-VL-4B-Instruct \
     --trust-remote-code \
@@ -13,7 +11,6 @@ python -m vllm.entrypoints.openai.api_server \
     --port 8000 \
     --gpu-memory-utilization 0.90 \
     --max-model-len 8192 \
-    --attention-backend torch \
     --max-num-seqs 256 \
     --enable-chunked-prefill \
     --enable-prefix-caching \
