@@ -83,11 +83,18 @@ class VllmAdapter:
             try:
                 frames_b64, res_info = self._extract_frames(batch)
                 if not frames_b64:
+                    print(
+                        f"[VLM DEBUG] skip batch (frames=0) video_path={getattr(batch[0], 'video_path', '')}"
+                    )
                     err = VerificationResult.error("Video frame extraction failed")
                     results.extend([err] * len(batch))
                     continue
 
                 messages = self._build_messages(batch, question, frames_b64, res_info, plan_context)
+                print(
+                    f"[VLM DEBUG] sending batch size={len(batch)} frames={len(frames_b64)} "
+                    f"endpoint={self.config.endpoint} model={self.config.model_name}"
+                )
                 response = await self.client.chat.completions.create(
                     model=self.config.model_name,
                     messages=messages,
@@ -104,6 +111,7 @@ class VllmAdapter:
                     else:
                         results.append(VerificationResult.error("Missing result for track"))
             except Exception as exc:  # noqa: BLE001
+                print(f"[VLM ERROR] {exc}")
                 err = VerificationResult.error(str(exc))
                 results.extend([err] * len(batch))
         return results

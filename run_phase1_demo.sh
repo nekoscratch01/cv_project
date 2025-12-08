@@ -16,6 +16,7 @@ config = SystemConfig(
     vlm_backend="vllm",
     vllm_endpoint="http://localhost:8000/v1",
     vllm_model_name="Qwen/Qwen3-VL-4B-Instruct",
+    router_backend="vllm",
 )
 
 system = VideoSemanticSystem(config=config)
