@@ -3,14 +3,7 @@
 
 set -euo pipefail
 
-# 固定禁用 flash-attn（避免编译或缺失时崩溃），使用 PyTorch SDPA。
-# 如需开启 flash-attn 加速，未来手动改为：
-#   export VLLM_USE_FLASH_ATTENTION=1
-#   export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-# 并确保已安装 flash-attn（pip install "flash-attn>=2.5.8" --no-build-isolation）
-export VLLM_USE_FLASH_ATTENTION=0
-export VLLM_ATTENTION_BACKEND=TORCH_SDPA
-echo "[vLLM] flash-attn disabled; using TORCH_SDPA backend. To enable later: set VLLM_USE_FLASH_ATTENTION=1 and VLLM_ATTENTION_BACKEND=FLASH_ATTN (after installing flash-attn)."
+# 默认使用 PyTorch SDPA 后端；如安装 flash-attn 后可改为 --attention-backend flash
 
 python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen3-VL-4B-Instruct \
@@ -20,6 +13,7 @@ python -m vllm.entrypoints.openai.api_server \
     --port 8000 \
     --gpu-memory-utilization 0.90 \
     --max-model-len 8192 \
+    --attention-backend torch \
     --max-num-seqs 256 \
     --enable-chunked-prefill \
     --enable-prefix-caching \
