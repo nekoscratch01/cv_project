@@ -104,6 +104,7 @@ class VllmAdapter:
                     max_tokens=self.config.max_tokens,
                 )
                 raw_text = response.choices[0].message.content if response.choices else ""
+                print(f"[VLM DEBUG] raw response: {raw_text[:400]}")
                 parsed_map = self._parse_batch_response(raw_text or "", [p.track_id for p in batch])
 
                 for pkg in batch:
