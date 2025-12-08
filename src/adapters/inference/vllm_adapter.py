@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import cv2
+import numpy as np
 
 try:
     from openai import AsyncOpenAI
@@ -83,7 +84,19 @@ class VllmAdapter:
         for i in range(0, len(packages), batch_size):
             batch = packages[i : i + batch_size]
             try:
-                frames_b64, res_info = self._extract_frames(batch)
+                # 取整个 batch 的帧区间并集，避免“张冠李戴”
+                all_frames = [f for pkg in batch for f in pkg.frames]
+                if not all_frames:
+                    err = VerificationResult.error("No frames in batch")
+                    results.extend([err] * len(batch))
+                    continue
+                start_f, end_f = min(all_frames), max(all_frames)
+                video_path = getattr(batch[0], "video_path", "") or ""
+                frames_b64, res_info = self._extract_frames(
+                    video_path=video_path,
+                    frame_range=(start_f, end_f),
+                    limit=self.config.frame_sampling_count,
+                )
                 if not frames_b64:
                     print(
                         f"[VLM DEBUG] skip batch (frames=0) video_path={getattr(batch[0], 'video_path', '')}"
@@ -229,12 +242,13 @@ class VllmAdapter:
 
         return ". ".join(parts) + "."
 
-    def _extract_frames(self, packages: List["EvidencePackage"]) -> Tuple[List[str], Tuple[int, int]]:
-        """提取全图帧，按首个包的轨迹区间均匀采样。"""
-        if not packages:
-            return [], (0, 0)
-        pkg0 = packages[0]
-        video_path = getattr(pkg0, "video_path", "") or ""
+    def _extract_frames(
+        self,
+        video_path: str,
+        frame_range: Tuple[int, int],
+        limit: int,
+    ) -> Tuple[List[str], Tuple[int, int]]:
+        """提取全图帧：按整个 batch 的帧范围均匀采样。"""
         if not video_path:
             return [], (0, 0)
 
@@ -245,13 +259,16 @@ class VllmAdapter:
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
-        start_f = min((pkg.frames[0] for pkg in packages if pkg.frames), default=0)
-        end_f = max((pkg.frames[-1] for pkg in packages if pkg.frames), default=start_f)
+        start_f, end_f = frame_range
         if end_f < start_f:
             end_f = start_f
-        count = max(self.config.frame_sampling_count, 1)
-        step = max(1, (end_f - start_f + 1) // count)
-        target_indices = list(range(start_f, end_f + 1, step))[:count]
+
+        count = max(limit, 1)
+        if end_f > start_f and count > 1:
+            indices = np.linspace(start_f, end_f, num=count, dtype=int)
+            target_indices = sorted(set(int(i) for i in indices))
+        else:
+            target_indices = [start_f]
 
         images_b64: List[str] = []
         for idx in target_indices:

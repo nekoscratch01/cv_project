@@ -18,9 +18,11 @@ Definitions:
    - Fast/Run > 1.5
    - Walk 0.2-1.0
    - Static < 0.1
+   * Only set this if the user explicitly mentions speed (run/walk/stand). Otherwise, omit it.
 2. linearity (0-1):
    - Wandering/Lingering < 0.3
    - Direct path > 0.8
+   * Only set this if the query implies path shape (e.g., wandering/徘徊).
 3. scale_change:
    - Approaching > 1.2
    - Leaving < 0.8
