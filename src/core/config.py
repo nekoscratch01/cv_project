@@ -42,7 +42,7 @@ class SystemConfig:
     siglip_device: str = "cuda"
     clip_filter_threshold: float = 0.05  # 放宽相似度阈值，避免误杀
     embedding_cache_dir: Path = Path("output/embeddings")
-    enable_clip_filter: bool = True  # CLIP/SigLIP 召回预过滤开关
+    enable_clip_filter: bool = False  # CLIP/SigLIP 召回预过滤开关（临时关闭以便直接进入 VLM）
 
     # Visualization
     highlight_color: tuple[int, int, int] = (0, 0, 255)
