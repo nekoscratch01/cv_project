@@ -40,6 +40,7 @@ class SystemConfig:
     router_temperature: float = 0.2
     siglip_model_name: str = "google/siglip-base-patch16-224"
     siglip_device: str = "cuda"
+    clip_filter_threshold: float = 0.05  # 放宽相似度阈值，避免误杀
     embedding_cache_dir: Path = Path("output/embeddings")
     enable_clip_filter: bool = True  # CLIP/SigLIP 召回预过滤开关
 

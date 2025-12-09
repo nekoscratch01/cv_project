@@ -19,6 +19,7 @@ from core.perception import VideoPerception
 from core.features import TrackFeatureExtractor
 from core.evidence import build_evidence_packages
 from pipeline.recall import RecallEngine
+from pipeline.clip_filter import ClipFilter
 from core.hard_rules import HardRuleEngine
 from core.vlm_types import QueryResult
 from typing import Any
@@ -295,8 +296,9 @@ class VideoSemanticSystem:
                     self.clip_filter = None
             if self.clip_filter is not None:
                 before = len(candidates)
-                candidates = self.clip_filter.filter_candidates(plan.description or plan.visual_tags, candidates, threshold=0.2)
-                print(f"   🧊 After CLIP filter: {len(candidates)} (filtered {before - len(candidates)})")
+                threshold = getattr(self.config, "clip_filter_threshold", 0.05)
+                candidates = self.clip_filter.filter_candidates(plan.description or plan.visual_tags, candidates, threshold=threshold)
+                print(f"   🧊 After CLIP filter: {len(candidates)} (filtered {before - len(candidates)}, thr={threshold})")
 
         # Step 1.5: Hard Rule Engine
         hard_engine = self._ensure_hard_rule_engine()
