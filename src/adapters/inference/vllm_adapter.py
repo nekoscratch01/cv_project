@@ -137,7 +137,19 @@ class VllmAdapter:
                             continue
                         contents.append({"type": "text", "text": f"### Candidate ID {pkg.track_id}"})
                         contents.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
-                    contents.append({"type": "text", "text": f"Query: {question}\nReturn JSON keyed by track id."})
+                    prompt_instruction = (
+                        f"Query: {question}\n\n"
+                        "Verify if the candidate matches the query based on the image details.\n"
+                        "Respond strictly in JSON format:\n"
+                        "{\n"
+                        '  \"<track_id>\": {\n'
+                        '    \"match\": true or false,\n'
+                        '    \"reason\": \"English description of visual features\",\n'
+                        '    \"confidence\": 0.0 to 1.0\n'
+                        "  }\n"
+                        "}"
+                    )
+                    contents.append({"type": "text", "text": prompt_instruction})
                     messages = [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": contents},

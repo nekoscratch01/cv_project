@@ -300,14 +300,14 @@ class VideoSemanticSystem:
                 candidates = self.clip_filter.filter_candidates(plan.description or plan.visual_tags, candidates, threshold=threshold)
                 print(f"   🧊 After CLIP filter: {len(candidates)} (filtered {before - len(candidates)}, thr={threshold})")
 
-        # Step 1.5: Hard Rule Engine
-        hard_engine = self._ensure_hard_rule_engine()
-        candidates = hard_engine.apply_constraints(candidates, plan)
-        print(f"   📐 After hard rules: {len(candidates)}")
-        if candidates:
-            print(f"   🔢 Candidate IDs: {', '.join(str(c.track_id) for c in candidates)}")
+        # Step 1.5: Hard Rule Engine（已关闭，依赖 CLIP + VLM 双层过滤）
+        # hard_engine = self._ensure_hard_rule_engine()
+        # candidates = hard_engine.apply_constraints(candidates, plan)
+        # print(f"   📐 After hard rules: {len(candidates)}")
+        # if candidates:
+        #     print(f"   🔢 Candidate IDs: {', '.join(str(c.track_id) for c in candidates)}")
         if not candidates:
-            print("   ❌ No candidates after hard rules")
+            print("   ❌ No candidates after CLIP")
             return []
 
         # Step 2: VLM精排阶段（AI判断）
