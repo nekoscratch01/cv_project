@@ -423,17 +423,40 @@ class VllmAdapter:
         try:
             match = re.search(r"\{.*\}", text, re.S)
             json_str = match.group(0) if match else text
+            json_str = json_str.replace("'", '"')
             data = json.loads(json_str)
+
             results: Dict[str, VerificationResult] = {}
+            positive_keywords = {"yes", "true", "match", "匹配", "是", "符合"}
+
             for key, val in data.items():
-                match_flag = bool(val.get("match") or str(val.get("match", "")).lower() == "yes")
-                conf = float(val.get("confidence", 0.0)) if isinstance(val, dict) else 0.0
-                reason = val.get("reason", "") if isinstance(val, dict) else str(val)
-                if match_flag:
-                    results[str(key)] = VerificationResult.confirmed(conf or 0.8, reason, raw=text)
+                is_match = False
+                reason = ""
+                confidence = 0.8
+
+                if isinstance(val, dict):
+                    match_str = str(val.get("match", "")).lower()
+                    is_match = match_str in positive_keywords or any(k in match_str for k in positive_keywords)
+                    reason = val.get("reason", str(val))
+                    try:
+                        confidence = float(val.get("confidence", confidence))
+                    except Exception:
+                        pass
+                elif isinstance(val, str):
+                    lower_val = val.lower()
+                    is_match = any(k in lower_val for k in positive_keywords)
+                    # 否定词兜底
+                    if "不匹配" in val or "不" in val or "no" in lower_val or "not" in lower_val:
+                        is_match = False
+                    reason = val
+                else:
+                    reason = str(val)
+
+                if is_match:
+                    results[str(key)] = VerificationResult.confirmed(confidence, reason, raw=text)
                 else:
                     results[str(key)] = VerificationResult.rejected(reason or "No match", raw=text)
-            # 标记缺失的 ID，避免误判请求缺失
+
             for tid in expected_ids:
                 if str(tid) not in results:
                     results[str(tid)] = VerificationResult.error("Missing result in JSON")
