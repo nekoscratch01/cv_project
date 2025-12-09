@@ -104,12 +104,13 @@ class VllmAdapter:
                     continue
                 start_f, end_f = min(all_frames), max(all_frames)
                 video_path = getattr(batch[0], "video_path", "") or ""
-                frames_b64, res_info = self._extract_frames(
+                frames_b64, res_info, frames_raw = self._extract_frames(
                     packages=batch,
                     video_path=video_path,
                     frame_range=(start_f, end_f),
                     limit=self.config.frame_sampling_count,
                     draw_boxes=need_context,
+                    return_frames=True,
                 )
                 # 提取每个目标的最佳特写
                 ref_crops = [self._extract_best_crop(pkg, video_path, res_info) for pkg in batch]
@@ -117,13 +118,24 @@ class VllmAdapter:
                     setattr(pkg, "best_crop_b64", b64)
 
                 if need_context:
-                    # Layer 2：全景 + 红框 + 特写
+                    # Layer 2：全景 + 胶片 + 特写
                     if not frames_b64:
                         print(f"[VLM DEBUG] skip batch (frames=0) video_path={getattr(batch[0], 'video_path', '')}")
                         err = VerificationResult.error("Video frame extraction failed")
                         results.extend([err] * len(batch))
                         continue
-                    messages = self._build_messages(batch, question, frames_b64, res_info, plan_context, ref_crops)
+                    filmstrip_b64 = None
+                    if self.config.filmstrip_enabled and frames_raw:
+                        filmstrip_b64 = self._stitch_filmstrip(frames_raw, self.config.filmstrip_max_width)
+                    messages = self._build_messages(
+                        batch,
+                        question,
+                        frames_b64 if filmstrip_b64 is None else [filmstrip_b64],
+                        res_info,
+                        plan_context,
+                        ref_crops,
+                        use_filmstrip=filmstrip_b64 is not None,
+                    )
                 else:
                     # Layer 1：仅特写图片
                     if not any(ref_crops):
@@ -189,6 +201,7 @@ class VllmAdapter:
         res_info: Tuple[int, int],
         plan_context: Optional[str],
         ref_crops_b64: List[str],
+        use_filmstrip: bool = False,
     ) -> List[dict]:
         """构造批量 Prompt：全图帧 + 多候选 BBox + 遥测。"""
         contents: List[dict] = []
@@ -200,11 +213,11 @@ class VllmAdapter:
             contents.append({"type": "text", "text": f"### Reference Target ID {pkg.track_id}"})
             contents.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
 
-        # 再放上下文帧（画了红框的）
+        # 再放上下文帧（画了红框的）；如果使用胶片，则只有一张 filmstrip
         for b64 in frames_b64:
             contents.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
 
-        prompt = self._build_prompt(packages, question, plan_context, res_info)
+        prompt = self._build_prompt(packages, question, plan_context, res_info, use_filmstrip=use_filmstrip)
         contents.append({"type": "text", "text": prompt})
         return [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -231,6 +244,7 @@ class VllmAdapter:
         question: str,
         plan_context: Optional[str],
         resolution: Tuple[int, int],
+        use_filmstrip: bool = False,
     ) -> str:
         telemetry_lines: List[str] = []
         res_w, res_h = resolution
@@ -249,11 +263,23 @@ class VllmAdapter:
         constraints = plan_context or "No additional constraints."
         telemetry_block = "\n".join(telemetry_lines)
 
+        filmstrip_note = (
+            "Image order: reference crops first, then a single FILMSTRIP image. "
+            "In the FILMSTRIP, left = past, right = future. Use red boxes to track motion and direction."
+            if use_filmstrip
+            else "Images after the references are individual context frames with red boxes."
+        )
+
         return f"""## User Query
 "{question}"
 
 ## Candidates Telemetry
 {telemetry_block}
+
+## Visual Inputs
+- Reference crops: high-res close-ups of each candidate.
+- Context: {'Filmstrip (stitched timeline)' if use_filmstrip else 'multiple frames with red boxes'}.
+- {filmstrip_note}
 
 ## Constraints
 {constraints}
@@ -310,14 +336,15 @@ class VllmAdapter:
         frame_range: Tuple[int, int],
         limit: int,
         draw_boxes: bool = True,
-    ) -> Tuple[List[str], Tuple[int, int]]:
+        return_frames: bool = False,
+    ) -> Tuple[List[str], Tuple[int, int], Optional[List]]:
         """提取全图帧：按整个 batch 的帧范围均匀采样，可选画框。"""
         if not video_path:
-            return [], (0, 0)
+            return [], (0, 0), [] if return_frames else None
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return [], (0, 0)
+            return [], (0, 0), [] if return_frames else None
 
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -341,6 +368,7 @@ class VllmAdapter:
                     frame_map.setdefault(f_idx, []).append((pkg.track_id, bbox))
 
         images_b64: List[str] = []
+        images_raw: List = []
         for idx in target_indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret, frame = cap.read()
@@ -352,11 +380,29 @@ class VllmAdapter:
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
                     cv2.putText(frame, f"ID:{tid}", (x1, max(20, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             frame = self._resize_long(frame, self.config.image_resize_long)
+            if return_frames:
+                images_raw.append(frame.copy())
             _, buffer = cv2.imencode(".jpg", frame)
             b64 = base64.b64encode(buffer).decode("utf-8")
             images_b64.append(b64)
         cap.release()
-        return images_b64, (w, h)
+        return images_b64, (w, h), images_raw if return_frames else None
+
+    def _stitch_filmstrip(self, frames: List, max_width: int) -> Optional[str]:
+        """将若干帧横向拼接成胶片，并缩放到不超过 max_width。返回 base64。"""
+        if not frames:
+            return None
+        heights = [f.shape[0] for f in frames]
+        widths = [f.shape[1] for f in frames]
+        target_h = min(heights)
+        resized = [cv2.resize(f, (int(f.shape[1] * target_h / f.shape[0]), target_h)) for f in frames]
+        film = cv2.hconcat(resized)
+        h, w = film.shape[:2]
+        if w > max_width:
+            scale = max_width / w
+            film = cv2.resize(film, (max_width, int(h * scale)))
+        _, buffer = cv2.imencode(".jpg", film)
+        return base64.b64encode(buffer).decode("utf-8")
 
     @staticmethod
     def _resize_long(frame, target_long: int):

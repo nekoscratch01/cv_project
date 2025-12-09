@@ -42,6 +42,10 @@ class SystemConfig:
     siglip_device: str = "cuda"
     clip_filter_threshold: float = 0.05  # 放宽相似度阈值，避免误杀
     embedding_cache_dir: Path = Path("output/embeddings")
+    # Filmstrip (Layer2) settings
+    filmstrip_enabled: bool = True
+    filmstrip_frame_count: int = 5
+    filmstrip_max_width: int = 4096  # 最终拼接图的最大宽度
     enable_clip_filter: bool = False  # CLIP/SigLIP 召回预过滤开关（临时关闭以便直接进入 VLM）
 
     # Visualization

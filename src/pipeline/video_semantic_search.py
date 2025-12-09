@@ -286,7 +286,7 @@ class VideoSemanticSystem:
         )
         print(f"   🔎 Candidate tracks: {len(candidates)}")
 
-        # Step 1.1: CLIP/SigLIP 预过滤（外观快速筛）
+        # Step 1.1: CLIP/SigLIP 预过滤（外观快速筛，默认关闭，由配置控制）
         if getattr(self.config, "enable_clip_filter", False):
             if self.clip_filter is None:
                 try:
@@ -302,12 +302,7 @@ class VideoSemanticSystem:
         else:
             print("   🧊 CLIP filter disabled (enable_clip_filter=False)")
 
-        # Step 1.5: Hard Rule Engine（已关闭，依赖 CLIP + VLM 双层过滤）
-        # hard_engine = self._ensure_hard_rule_engine()
-        # candidates = hard_engine.apply_constraints(candidates, plan)
-        # print(f"   📐 After hard rules: {len(candidates)}")
-        # if candidates:
-        #     print(f"   🔢 Candidate IDs: {', '.join(str(c.track_id) for c in candidates)}")
+        # Step 1.5: Hard Rule Engine（已移除，保留 CLIP + VLM 双层过滤）
         if not candidates:
             print("   ❌ No candidates after CLIP")
             return []
