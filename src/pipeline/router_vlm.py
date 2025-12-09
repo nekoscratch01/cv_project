@@ -22,9 +22,12 @@ Decision Logic:
    - Examples: "running person", "leaving the shop", "wandering at the door".
 
 Constraints (only set if explicitly implied by the query):
-- norm_speed (body_heights/s): Fast >1.5; Walk 0.2-1.0; Static <0.1
-- linearity (0-1): Wandering <0.3; Direct >0.8
+- norm_speed (body_heights/s): Fast >1.8; Walk 0.0-1.8; Static <0.1
+  * If query does NOT mention motion speed, DO NOT set this.
+- linearity (0-1): Wandering <0.3; Direct >0.7
+  * Default unset if query doesn’t imply path shape.
 - scale_change: Approaching >1.2; Leaving <0.8
+  * Default unset if query doesn’t imply depth change.
 
 Output JSON ONLY:
 {
