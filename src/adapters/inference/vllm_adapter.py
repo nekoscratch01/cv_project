@@ -119,30 +119,28 @@ class VllmAdapter:
                 if need_context:
                     # Layer 2：全景 + 红框 + 特写
                     if not frames_b64:
-                        print(
-                            f\"[VLM DEBUG] skip batch (frames=0) video_path={getattr(batch[0], 'video_path', '')}\"
-                        )
-                        err = VerificationResult.error(\"Video frame extraction failed\")
+                        print(f"[VLM DEBUG] skip batch (frames=0) video_path={getattr(batch[0], 'video_path', '')}")
+                        err = VerificationResult.error("Video frame extraction failed")
                         results.extend([err] * len(batch))
                         continue
                     messages = self._build_messages(batch, question, frames_b64, res_info, plan_context, ref_crops)
                 else:
                     # Layer 1：仅特写图片
                     if not any(ref_crops):
-                        print(\"[VLM DEBUG] skip batch (no ref crops)\")
-                        err = VerificationResult.error(\"No reference crops for batch\")
+                        print("[VLM DEBUG] skip batch (no ref crops)")
+                        err = VerificationResult.error("No reference crops for batch")
                         results.extend([err] * len(batch))
                         continue
                     contents = []
                     for pkg, b64 in zip(batch, ref_crops):
                         if not b64:
                             continue
-                        contents.append({\"type\": \"text\", \"text\": f\"### Candidate ID {pkg.track_id}\"})
-                        contents.append({\"type\": \"image_url\", \"image_url\": {\"url\": f\"data:image/jpeg;base64,{b64}\"}})
-                    contents.append({\"type\": \"text\", \"text\": f\"Query: {question}\\nReturn JSON keyed by track id.\"})
+                        contents.append({"type": "text", "text": f"### Candidate ID {pkg.track_id}"})
+                        contents.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+                    contents.append({"type": "text", "text": f"Query: {question}\nReturn JSON keyed by track id."})
                     messages = [
-                        {\"role\": \"system\", \"content\": SYSTEM_PROMPT},
-                        {\"role\": \"user\", \"content\": contents},
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": contents},
                     ]
                 print(
                     f"[VLM DEBUG] sending batch size={len(batch)} frames={len(frames_b64)} "
