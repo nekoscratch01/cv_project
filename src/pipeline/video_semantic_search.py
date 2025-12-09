@@ -287,7 +287,7 @@ class VideoSemanticSystem:
         print(f"   🔎 Candidate tracks: {len(candidates)}")
 
         # Step 1.1: CLIP/SigLIP 预过滤（外观快速筛）
-        if getattr(self.config, "enable_clip_filter", True):
+        if getattr(self.config, "enable_clip_filter", False):
             if self.clip_filter is None:
                 try:
                     self.clip_filter = ClipFilter(model_name=self.config.siglip_model_name, device=self.config.siglip_device)
@@ -299,6 +299,8 @@ class VideoSemanticSystem:
                 threshold = getattr(self.config, "clip_filter_threshold", 0.05)
                 candidates = self.clip_filter.filter_candidates(plan.description or plan.visual_tags, candidates, threshold=threshold)
                 print(f"   🧊 After CLIP filter: {len(candidates)} (filtered {before - len(candidates)}, thr={threshold})")
+        else:
+            print("   🧊 CLIP filter disabled (enable_clip_filter=False)")
 
         # Step 1.5: Hard Rule Engine（已关闭，依赖 CLIP + VLM 双层过滤）
         # hard_engine = self._ensure_hard_rule_engine()
