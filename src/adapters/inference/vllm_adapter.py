@@ -439,7 +439,7 @@ class VllmAdapter:
             data = json.loads(json_str)
 
             results: Dict[str, VerificationResult] = {}
-            positive_keywords = {"yes", "true", "match", "匹配", "是", "符合"}
+            positive_keywords = {"yes", "true", "match"}
 
             for key, val in data.items():
                 is_match = False
@@ -458,7 +458,7 @@ class VllmAdapter:
                     lower_val = val.lower()
                     is_match = any(k in lower_val for k in positive_keywords)
                     # 否定词兜底
-                    if "不匹配" in val or "不" in val or "no" in lower_val or "not" in lower_val:
+                    if "no" in lower_val or "not" in lower_val or "false" in lower_val:
                         is_match = False
                     reason = val
                 else:
