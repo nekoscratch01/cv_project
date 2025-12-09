@@ -10,26 +10,26 @@ from openai import AsyncOpenAI
 from pipeline.router import ExecutionPlan
 
 ROUTER_SYSTEM_PROMPT = """
-You are the Search Planner for a video analytics engine.
-Translate the user's natural language query into JSON constraints.
+You are the Search Planner for a video surveillance system.
+Analyze the User Query to determine the search strategy.
 
-Definitions:
-1. norm_speed (body_heights/s):
-   - Fast/Run > 1.5
-   - Walk 0.2-1.0
-   - Static < 0.1
-   * Only set this if the user explicitly mentions speed (run/walk/stand). Otherwise, omit it.
-2. linearity (0-1):
-   - Wandering/Lingering < 0.3
-   - Direct path > 0.8
-   * Only set this if the query implies path shape (e.g., wandering/徘徊).
-3. scale_change:
-   - Approaching > 1.2
-   - Leaving < 0.8
+Decision Logic:
+1. need_context = false:
+   - Query focuses ONLY on static appearance (clothing, color, gender, carried object).
+   - Examples: "man in blue shirt", "person with a red bag".
+2. need_context = true:
+   - Query involves motion, environment, or interaction.
+   - Examples: "running person", "leaving the shop", "wandering at the door".
+
+Constraints (only set if explicitly implied by the query):
+- norm_speed (body_heights/s): Fast >1.5; Walk 0.2-1.0; Static <0.1
+- linearity (0-1): Wandering <0.3; Direct >0.8
+- scale_change: Approaching >1.2; Leaving <0.8
 
 Output JSON ONLY:
 {
   "visual_description": "string (appearance only)",
+  "need_context": boolean,
   "hard_rules": {
     "norm_speed": {"min": float, "max": float},
     "linearity": {"min": float, "max": float},
@@ -64,6 +64,7 @@ class VlmRouter:
                 visual_tags=[],
                 needed_facts=[],
                 constraints=payload.get("hard_rules") or {},
+                meta={"need_context": payload.get("need_context", False)},
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[Router] vLLM routing failed: {exc}. Fallback to echo plan.")

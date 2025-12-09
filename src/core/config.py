@@ -41,6 +41,7 @@ class SystemConfig:
     siglip_model_name: str = "google/siglip-base-patch16-224"
     siglip_device: str = "cuda"
     embedding_cache_dir: Path = Path("output/embeddings")
+    enable_clip_filter: bool = True  # CLIP/SigLIP 召回预过滤开关
 
     # Visualization
     highlight_color: tuple[int, int, int] = (0, 0, 255)

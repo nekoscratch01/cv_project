@@ -113,6 +113,7 @@ class VideoSemanticSystem:
         self.vlm_client = vlm_client or self._build_vlm_client()
         self.router = router or self._build_router()
         self.hard_rule_engine = hard_rule_engine
+        self.clip_filter = None  # 延迟加载
 
     def build_index(self) -> None:
         """
@@ -283,6 +284,19 @@ class VideoSemanticSystem:
             top_k=recall_top_k,
         )
         print(f"   🔎 Candidate tracks: {len(candidates)}")
+
+        # Step 1.1: CLIP/SigLIP 预过滤（外观快速筛）
+        if getattr(self.config, "enable_clip_filter", True):
+            if self.clip_filter is None:
+                try:
+                    self.clip_filter = ClipFilter(model_name=self.config.siglip_model_name, device=self.config.siglip_device)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"   ⚠️ CLIP filter init failed: {exc}")
+                    self.clip_filter = None
+            if self.clip_filter is not None:
+                before = len(candidates)
+                candidates = self.clip_filter.filter_candidates(plan.description or plan.visual_tags, candidates, threshold=0.2)
+                print(f"   🧊 After CLIP filter: {len(candidates)} (filtered {before - len(candidates)})")
 
         # Step 1.5: Hard Rule Engine
         hard_engine = self._ensure_hard_rule_engine()

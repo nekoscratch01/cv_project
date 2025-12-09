@@ -81,6 +81,15 @@ class VllmAdapter:
         """
         Phase 2 核心：全图 Grounding 批处理。
         """
+        # 判断是否需要上下文：plan_context 携带 need_context
+        need_context = False
+        if plan_context:
+            try:
+                ctx = json.loads(plan_context)
+                need_context = bool(ctx.get("meta", {}).get("need_context", False))
+            except Exception:
+                need_context = False
+
         results: List[VerificationResult] = []
         batch_size = max(1, min(concurrency, len(packages)))
 
@@ -96,19 +105,45 @@ class VllmAdapter:
                 start_f, end_f = min(all_frames), max(all_frames)
                 video_path = getattr(batch[0], "video_path", "") or ""
                 frames_b64, res_info = self._extract_frames(
+                    packages=batch,
                     video_path=video_path,
                     frame_range=(start_f, end_f),
                     limit=self.config.frame_sampling_count,
+                    draw_boxes=need_context,
                 )
-                if not frames_b64:
-                    print(
-                        f"[VLM DEBUG] skip batch (frames=0) video_path={getattr(batch[0], 'video_path', '')}"
-                    )
-                    err = VerificationResult.error("Video frame extraction failed")
-                    results.extend([err] * len(batch))
-                    continue
+                # 提取每个目标的最佳特写
+                ref_crops = [self._extract_best_crop(pkg, video_path, res_info) for pkg in batch]
+                for pkg, b64 in zip(batch, ref_crops):
+                    setattr(pkg, "best_crop_b64", b64)
 
-                messages = self._build_messages(batch, question, frames_b64, res_info, plan_context)
+                if need_context:
+                    # Layer 2：全景 + 红框 + 特写
+                    if not frames_b64:
+                        print(
+                            f\"[VLM DEBUG] skip batch (frames=0) video_path={getattr(batch[0], 'video_path', '')}\"
+                        )
+                        err = VerificationResult.error(\"Video frame extraction failed\")
+                        results.extend([err] * len(batch))
+                        continue
+                    messages = self._build_messages(batch, question, frames_b64, res_info, plan_context, ref_crops)
+                else:
+                    # Layer 1：仅特写图片
+                    if not any(ref_crops):
+                        print(\"[VLM DEBUG] skip batch (no ref crops)\")
+                        err = VerificationResult.error(\"No reference crops for batch\")
+                        results.extend([err] * len(batch))
+                        continue
+                    contents = []
+                    for pkg, b64 in zip(batch, ref_crops):
+                        if not b64:
+                            continue
+                        contents.append({\"type\": \"text\", \"text\": f\"### Candidate ID {pkg.track_id}\"})
+                        contents.append({\"type\": \"image_url\", \"image_url\": {\"url\": f\"data:image/jpeg;base64,{b64}\"}})
+                    contents.append({\"type\": \"text\", \"text\": f\"Query: {question}\\nReturn JSON keyed by track id.\"})
+                    messages = [
+                        {\"role\": \"system\", \"content\": SYSTEM_PROMPT},
+                        {\"role\": \"user\", \"content\": contents},
+                    ]
                 print(
                     f"[VLM DEBUG] sending batch size={len(batch)} frames={len(frames_b64)} "
                     f"endpoint={self.config.endpoint} model={self.config.model_name} ids={[p.track_id for p in batch]}"
@@ -142,15 +177,27 @@ class VllmAdapter:
         frames_b64: List[str],
         res_info: Tuple[int, int],
         plan_context: Optional[str],
+        ref_crops_b64: List[str],
     ) -> List[dict]:
         """构造批量 Prompt：全图帧 + 多候选 BBox + 遥测。"""
-        image_contents = [
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} for b64 in frames_b64
-        ]
+        contents: List[dict] = []
+
+        # 先放参考特写
+        for pkg, b64 in zip(packages, ref_crops_b64):
+            if not b64:
+                continue
+            contents.append({"type": "text", "text": f"### Reference Target ID {pkg.track_id}"})
+            contents.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+
+        # 再放上下文帧（画了红框的）
+        for b64 in frames_b64:
+            contents.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+
         prompt = self._build_prompt(packages, question, plan_context, res_info)
+        contents.append({"type": "text", "text": prompt})
         return [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": [*image_contents, {"type": "text", "text": prompt}]},
+            {"role": "user", "content": contents},
         ]
 
     def _sample_crops(self, crops: List[str]) -> List[str]:
@@ -247,11 +294,13 @@ class VllmAdapter:
 
     def _extract_frames(
         self,
+        packages: List["EvidencePackage"],
         video_path: str,
         frame_range: Tuple[int, int],
         limit: int,
+        draw_boxes: bool = True,
     ) -> Tuple[List[str], Tuple[int, int]]:
-        """提取全图帧：按整个 batch 的帧范围均匀采样。"""
+        """提取全图帧：按整个 batch 的帧范围均匀采样，可选画框。"""
         if not video_path:
             return [], (0, 0)
 
@@ -273,12 +322,24 @@ class VllmAdapter:
         else:
             target_indices = [start_f]
 
+        # 构建 frame->bboxes 映射，方便画框
+        frame_map: Dict[int, List[Tuple[int, Tuple[int, int, int, int]]]] = {}
+        if draw_boxes:
+            for pkg in packages:
+                for f_idx, bbox in zip(pkg.frames, pkg.bboxes):
+                    frame_map.setdefault(f_idx, []).append((pkg.track_id, bbox))
+
         images_b64: List[str] = []
         for idx in target_indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret, frame = cap.read()
             if not ret:
                 continue
+            if draw_boxes:
+                for tid, bbox in frame_map.get(idx, []):
+                    x1, y1, x2, y2 = bbox
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                    cv2.putText(frame, f"ID:{tid}", (x1, max(20, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             frame = self._resize_long(frame, self.config.image_resize_long)
             _, buffer = cv2.imencode(".jpg", frame)
             b64 = base64.b64encode(buffer).decode("utf-8")
@@ -294,6 +355,48 @@ class VllmAdapter:
         scale = target_long / max(h, w)
         new_w, new_h = int(w * scale), int(h * scale)
         return cv2.resize(frame, (new_w, new_h))
+
+    def _extract_best_crop(
+        self,
+        pkg: "EvidencePackage",
+        video_path: str,
+        resolution: Tuple[int, int],
+        pad: float = 0.15,
+    ) -> str:
+        """
+        提取最佳特写截图，按 best_bbox_index 选框并适当 padding。
+        返回 base64 编码字符串，失败返回空串。
+        """
+        if not pkg.frames or not pkg.bboxes:
+            return ""
+        idx = getattr(pkg, "best_bbox_index", -1)
+        if idx < 0 or idx >= len(pkg.bboxes):
+            idx = len(pkg.bboxes) // 2
+        frame_id = pkg.frames[idx]
+        x1, y1, x2, y2 = pkg.bboxes[idx]
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return ""
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+        ret, frame = cap.read()
+        if not ret:
+            cap.release()
+            return ""
+        cap.release()
+
+        w, h = resolution
+        pad_x = int((x2 - x1) * pad)
+        pad_y = int((y2 - y1) * pad)
+        x1p = max(0, x1 - pad_x)
+        y1p = max(0, y1 - pad_y)
+        x2p = min(w - 1, x2 + pad_x)
+        y2p = min(h - 1, y2 + pad_y)
+        crop = frame[y1p:y2p, x1p:x2p]
+        if crop.size == 0:
+            return ""
+        _, buffer = cv2.imencode(".jpg", crop)
+        return base64.b64encode(buffer).decode("utf-8")
 
     @staticmethod
     def _pick_mid_bbox(bboxes: List[Tuple[int, int, int, int]]) -> Tuple[int, int, int, int]:
