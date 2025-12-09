@@ -484,7 +484,7 @@ class VllmAdapter:
         try:
             match = re.search(r"\{.*\}", text, re.S)
             json_str = match.group(0) if match else text
-            json_str = json_str.replace("'", '"')
+            # 不再粗暴替换引号，避免破坏合法字符串；尝试直接解析
             data = json.loads(json_str)
 
             results: Dict[str, VerificationResult] = {}
