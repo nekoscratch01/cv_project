@@ -90,7 +90,13 @@ class VlmRouter:
 
             # 兜底清洗：若查询无动作关键词则清空速度/路径/尺度约束
             ql = query.lower()
-            motion_keywords = ["run", "walk", "fast", "slow", "move", "moving", "leave", "approach", "wander", "徘徊", "跑", "走", "离开", "靠近"]
+            motion_keywords = [
+                "run", "running", "walk", "walking", "fast", "slow",
+                "move", "moving", "leave", "leaving", "approach", "approaching",
+                "wander", "wandering", "loiter", "loitering", "stand", "standing", "static",
+                "enter", "entering", "exit", "exiting", "cross", "crossing", "pass", "passing",
+                "chase", "chasing", "follow", "following", "stop", "stopped",
+            ]
             if not any(k in ql for k in motion_keywords):
                 constraints = {}
             else:
