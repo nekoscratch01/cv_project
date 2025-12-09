@@ -36,6 +36,9 @@ class VllmConfig:
     max_images_per_request: int = 5
     frame_sampling_count: int = 5  # 全图采样帧数（与 start_vllm 限制的 image=5 对齐）
     image_resize_long: int = 1024  # 采样帧长边缩放
+    # Filmstrip / timeline settings (Layer 2)
+    filmstrip_enabled: bool = True
+    filmstrip_max_width: int = 4096
 
 
 SYSTEM_PROMPT = (
