@@ -479,53 +479,47 @@ class VllmAdapter:
 
     def _parse_batch_response(self, text: str, expected_ids: List[int]) -> Dict[str, VerificationResult]:
         """
-        解析形如 {"123": {"match": true, "reason": "...", "confidence": 0.8}, ...} 的 JSON。
+        更健壮的解析：逐个 ID 抽取独立块，即使整体 JSON 截断也尽量救回已生成的结果。
         """
-        try:
-            match = re.search(r"\{.*\}", text, re.S)
-            json_str = match.group(0) if match else text
-            # 不再粗暴替换引号，避免破坏合法字符串；尝试直接解析
-            data = json.loads(json_str)
+        results: Dict[str, VerificationResult] = {}
+        positive_keywords = {"yes", "true", "match"}
 
-            results: Dict[str, VerificationResult] = {}
-            positive_keywords = {"yes", "true", "match"}
+        clean_text = text.replace("’", "'")
 
-            for key, val in data.items():
-                is_match = False
-                reason = ""
-                confidence = 0.8
+        for tid in expected_ids:
+            tid_str = str(tid)
+            pattern = r'["\']?' + re.escape(tid_str) + r'["\']?\s*:\s*(\{.*?\})'
+            match = re.search(pattern, clean_text, re.S)
+            if not match:
+                pattern_alt = r'Target\s+["\']?' + re.escape(tid_str) + r'["\']?\s*:\s*(\{.*?\})'
+                match = re.search(pattern_alt, clean_text, re.S)
 
-                if isinstance(val, dict):
-                    match_str = str(val.get("match", "")).lower()
-                    is_match = match_str in positive_keywords or any(k in match_str for k in positive_keywords)
+            if match:
+                block_str = match.group(1)
+                try:
+                    val = json.loads(block_str)
+                    match_val = str(val.get("match", "")).lower()
+                    is_match = match_val in positive_keywords or str(val.get("match")) == "True"
                     reason = val.get("reason", str(val))
                     try:
-                        confidence = float(val.get("confidence", confidence))
+                        confidence = float(val.get("confidence", 0.8))
                     except Exception:
-                        pass
-                elif isinstance(val, str):
-                    lower_val = val.lower()
-                    is_match = any(k in lower_val for k in positive_keywords)
-                    # 否定词兜底
-                    if "no" in lower_val or "not" in lower_val or "false" in lower_val:
-                        is_match = False
-                    reason = val
-                else:
-                    reason = str(val)
+                        confidence = 0.8
+                    res = (
+                        VerificationResult.confirmed(confidence, reason, raw=block_str)
+                        if is_match
+                        else VerificationResult.rejected(reason or "No match", raw=block_str)
+                    )
+                    results[tid_str] = res
+                    continue
+                except json.JSONDecodeError:
+                    print(f"[VLM DEBUG] Failed to parse JSON block for ID {tid}: {block_str}")
 
-                if is_match:
-                    results[str(key)] = VerificationResult.confirmed(confidence, reason, raw=text)
-                else:
-                    results[str(key)] = VerificationResult.rejected(reason or "No match", raw=text)
+            results[tid_str] = VerificationResult.error(f"Parse failed (truncated?) for ID {tid}")
 
-            for tid in expected_ids:
-                if str(tid) not in results:
-                    results[str(tid)] = VerificationResult.error("Missing result in JSON")
-            if results:
-                return results
-        except Exception:
-            pass
-        # Fallback：整段用单对象解析，全部共享判定
+        if results:
+            return results
+
         shared = self._parser.parse(text)
         return {str(tid): shared for tid in expected_ids}
 

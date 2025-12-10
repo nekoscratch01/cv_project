@@ -31,7 +31,7 @@ class SystemConfig:
     vlm_gpu_layers: int = -1
     vlm_cpu_threads: int | None = None
     vlm_temperature: float = 0.1
-    vlm_max_new_tokens: int = 256
+    vlm_max_new_tokens: int = 1024  # 提高上限，避免批次回答被截断
     vlm_batch_size: int = 4
     # Router 默认改为轻量 simple（避免 transformers 依赖）
     router_backend: str = "simple"
