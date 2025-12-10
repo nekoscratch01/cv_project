@@ -1,2 +1,0 @@
-# 已合并到 requirements.txt，保留此文件做向后兼容。
--r requirements.txt
