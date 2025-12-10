@@ -118,18 +118,43 @@ class HardRuleEngine:
         tracks: List[EvidencePackage],
         constraints: Mapping[str, Any],
     ) -> List[EvidencePackage]:
-        min_speed_jump = constraints.get("min_speed_jump")
-        if min_speed_jump is None:
-            return tracks
-        threshold = float(min_speed_jump)
         result = []
         for pkg in tracks:
             features = pkg.features
             if not features:
                 continue
-            delta = features.max_speed_px_s - features.avg_speed_px_s
-            if delta + 1e-6 >= threshold:
-                result.append(pkg)
+
+            # norm_speed 区间过滤
+            ns = constraints.get("norm_speed")
+            if ns:
+                ns_min = float(ns.get("min", float("-inf")))
+                ns_max = float(ns.get("max", float("inf")))
+                if features.norm_speed + 1e-6 < ns_min:
+                    continue
+                if features.norm_speed - 1e-6 > ns_max:
+                    continue
+
+            # linearity 区间过滤
+            lin = constraints.get("linearity")
+            if lin:
+                lin_min = float(lin.get("min", float("-inf")))
+                lin_max = float(lin.get("max", float("inf")))
+                if features.linearity + 1e-6 < lin_min:
+                    continue
+                if features.linearity - 1e-6 > lin_max:
+                    continue
+
+            # scale_change 区间过滤
+            sc = constraints.get("scale_change")
+            if sc:
+                sc_min = float(sc.get("min", float("-inf")))
+                sc_max = float(sc.get("max", float("inf")))
+                if features.scale_change + 1e-6 < sc_min:
+                    continue
+                if features.scale_change - 1e-6 > sc_max:
+                    continue
+
+            result.append(pkg)
         return result
 
     def _apply_direction_filter(

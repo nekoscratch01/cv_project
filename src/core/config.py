@@ -22,23 +22,31 @@ class SystemConfig:
     sample_interval: int = 5   # 更稀疏存图，聚焦关键帧
     min_track_length: int = 15  # 过滤闪烁短轨迹
 
-    # Semantic / VLM (v7 默认：单 Qwen3‑VL‑4B，经 transformers；保留 llama-cpp 接口)
-    vlm_backend: str = "hf"  # 允许显式设为 "llama_cpp" 以备未来扩展
+    # Semantic / VLM (Phase1: 默认 vLLM 服务)
+    vlm_backend: str = "vllm"  # 强制 vLLM
+    vllm_endpoint: str = "http://localhost:8000/v1"
+    vllm_model_name: str = "Qwen/Qwen3-VL-4B-Instruct"
     vlm_gguf_path: Path | None = None
     vlm_context_size: int = 8192
     vlm_gpu_layers: int = -1
     vlm_cpu_threads: int | None = None
     vlm_temperature: float = 0.1
-    vlm_max_new_tokens: int = 256
+    vlm_max_new_tokens: int = 1024  # 提高上限，避免批次回答被截断
     vlm_batch_size: int = 4
-    # Router 默认也使用同一个 4B 模型；当前实现仅提供 transformers 版本
-    router_backend: str = "hf"  # 允许保留 "llama_cpp" 占位
+    # Router 默认改为轻量 simple（避免 transformers 依赖）
+    router_backend: str = "simple"
     router_gguf_path: Path | None = None
     router_max_new_tokens: int = 256
     router_temperature: float = 0.2
     siglip_model_name: str = "google/siglip-base-patch16-224"
     siglip_device: str = "cuda"
+    clip_filter_threshold: float = 0.05  # 放宽相似度阈值，避免误杀
     embedding_cache_dir: Path = Path("output/embeddings")
+    # Filmstrip (Layer2) settings
+    filmstrip_enabled: bool = True
+    filmstrip_frame_count: int = 5
+    filmstrip_max_width: int = 4096  # 最终拼接图的最大宽度
+    enable_clip_filter: bool = False  # CLIP/SigLIP 召回预过滤开关（临时关闭以便直接进入 VLM）
 
     # Visualization
     highlight_color: tuple[int, int, int] = (0, 0, 255)

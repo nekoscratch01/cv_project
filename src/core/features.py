@@ -33,6 +33,9 @@ class TrackFeatures:
     avg_speed_px_s: float
     max_speed_px_s: float
     path_length_px: float
+    norm_speed: float = 0.0
+    linearity: float = 0.0
+    scale_change: float = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -51,6 +54,9 @@ class TrackFeatures:
             "avg_speed_px_s": self.avg_speed_px_s,
             "max_speed_px_s": self.max_speed_px_s,
             "path_length_px": self.path_length_px,
+            "norm_speed": self.norm_speed,
+            "linearity": self.linearity,
+            "scale_change": self.scale_change,
         }
 
 
@@ -104,9 +110,11 @@ class TrackFeatureExtractor:
         height = max(self.metadata.height, 1)
 
         for track_id, record in tracks.items():
-            # 计算每个边界框的中心点坐标
+            # 计算中心点和面积，方便后续语义特征
             centers = [self._bbox_center(b) for b in record.bboxes]
             centroids = [self._normalize_center(c, width, height) for c in centers]
+            areas = [self._bbox_area(b) for b in record.bboxes]
+            avg_height = sum((b[3] - b[1]) for b in record.bboxes) / max(len(record.bboxes), 1)
 
             start_frame = record.frames[0] if record.frames else 0
             end_frame = record.frames[-1] if record.frames else 0
@@ -126,6 +134,9 @@ class TrackFeatureExtractor:
                     avg_speed_px_s=0.0,
                     max_speed_px_s=0.0,
                     path_length_px=0.0,
+                    norm_speed=0.0,
+                    linearity=0.0,
+                    scale_change=1.0,
                 )
                 continue
             # 计算每个边界框的中心点坐标之间的距
@@ -148,6 +159,23 @@ class TrackFeatureExtractor:
             avg_speed = float(np.mean(speeds)) if speeds else 0.0
             max_speed = float(np.max(speeds)) if speeds else 0.0
 
+            # 归一化速度（身长/秒）：用平均框高作为身长尺度，加保护下限
+            norm_speed = 0.0
+            if duration_seconds > 0:
+                avg_height = max(avg_height, 10.0)
+                norm_speed = (avg_speed) / avg_height if avg_height > 0 else 0.0
+
+            # 线性度：位移 / 路径长度，极短路径视为徘徊
+            linearity = 0.0
+            if total_length >= 50.0:
+                linearity = float(math.hypot(*displacement_vec)) / max(total_length, 1.0)
+
+            # 尺度变化：前5帧平均面积 vs 后5帧平均面积，平滑抖动
+            head_area = np.mean(areas[:5]) if areas else 1.0
+            tail_area = np.mean(areas[-5:]) if areas else 1.0
+            head_area = max(head_area, 1.0)
+            scale_change = float(tail_area / head_area)
+
             features[track_id] = TrackFeatures(
                 track_id=track_id,
                 start_s=start_time,
@@ -158,6 +186,9 @@ class TrackFeatureExtractor:
                 avg_speed_px_s=avg_speed,
                 max_speed_px_s=max_speed,
                 path_length_px=total_length,
+                norm_speed=norm_speed,
+                linearity=linearity,
+                scale_change=scale_change,
             )
 
         return features
@@ -202,3 +233,8 @@ class TrackFeatureExtractor:
         start_x, start_y = centroids[0]
         end_x, end_y = centroids[-1]
         return (float(end_x - start_x), float(end_y - start_y))
+
+    @staticmethod
+    def _bbox_area(bbox: Tuple[int, int, int, int]) -> float:
+        x1, y1, x2, y2 = bbox
+        return float(max(x2 - x1, 0) * max(y2 - y1, 0))

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
 
 from core.features import TrackFeatures
 from core.perception import TrackRecord, VideoMetadata
@@ -45,6 +50,8 @@ class EvidencePackage:
     bboxes: List[Tuple[int, int, int, int]]
     crops: List[str]
     fps: float
+    video_path: str = ""
+    best_bbox_index: int = -1  # 面积+中心性选出的最佳截图索引
     features: Optional[TrackFeatures] = None
     meta: Optional[Dict[str, Any]] = None
     raw_trace: Optional[List[Tuple[int, int, int, int]]] = None
@@ -114,6 +121,7 @@ def build_evidence_packages(
     track_records: Dict[int, TrackRecord],
     metadata: VideoMetadata,
     features: Dict[int, TrackFeatures],
+    video_path: str | Path = "",
 ) -> Dict[int, EvidencePackage]:
     """
     构建证据包字典：把分散的数据打包成统一格式。
@@ -158,13 +166,16 @@ def build_evidence_packages(
     """
     packages: Dict[int, EvidencePackage] = {}
     for track_id, record in track_records.items():
+        best_idx = _select_best_bbox_index(record, metadata)
         packages[track_id] = EvidencePackage(
             video_id=video_id,
+            video_path=str(video_path) if video_path else "",
             track_id=track_id,
             frames=list(record.frames),       # 复制列表，避免引用
             bboxes=list(record.bboxes),       # 复制列表
             crops=list(record.crops),         # 复制列表
             fps=metadata.fps,
+            best_bbox_index=best_idx,
             features=features.get(track_id),  # 如果不存在则为 None
             meta={
                 "video_id": video_id,
@@ -174,3 +185,73 @@ def build_evidence_packages(
             raw_trace=list(record.bboxes),
         )
     return packages
+
+
+def _select_best_bbox_index(record: TrackRecord, meta: VideoMetadata) -> int:
+    """
+    选择最佳截图索引：面积为主，中心性为辅，剔除贴边框。
+    """
+    if not record.bboxes:
+        return -1
+
+    cx, cy = meta.width / 2, meta.height / 2
+    best_idx = -1
+    best_score = -1.0
+
+    for i, (x1, y1, x2, y2) in enumerate(record.bboxes):
+        # 边缘剔除：避免截断人物
+        if x1 < 5 or y1 < 5 or x2 > meta.width - 5 or y2 > meta.height - 5:
+            continue
+        area = (x2 - x1) * (y2 - y1)
+        box_cx, box_cy = (x1 + x2) / 2, (y1 + y2) / 2
+        dist = ((box_cx - cx) ** 2 + (box_cy - cy) ** 2) ** 0.5
+        max_dist = ((meta.width ** 2 + meta.height ** 2) ** 0.5) / 2
+        centrality = 1.0 - dist / max(max_dist, 1.0)
+        score = area * (1.0 + 0.5 * centrality)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+
+    if best_idx == -1:
+        # 全部贴边被过滤，退回面积最大
+        areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in record.bboxes]
+        best_idx = int(np.argmax(areas)) if areas else -1
+    return best_idx
+
+
+def extract_best_crop_from_package(pkg: EvidencePackage, pad: float = 0.15) -> str:
+    """
+    从原视频中提取最佳特写（base64）。
+    优先使用 best_bbox_index；缺失则取中间帧的框。
+    """
+    if not pkg.frames or not pkg.bboxes or not pkg.video_path:
+        return ""
+
+    idx = getattr(pkg, "best_bbox_index", -1)
+    if idx < 0 or idx >= len(pkg.bboxes):
+        idx = len(pkg.bboxes) // 2
+
+    frame_id = pkg.frames[idx]
+    x1, y1, x2, y2 = pkg.bboxes[idx]
+
+    cap = cv2.VideoCapture(pkg.video_path)
+    if not cap.isOpened():
+        return ""
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        return ""
+
+    h, w = frame.shape[:2]
+    pad_x = int((x2 - x1) * pad)
+    pad_y = int((y2 - y1) * pad)
+    x1p = max(0, x1 - pad_x)
+    y1p = max(0, y1 - pad_y)
+    x2p = min(w, x2 + pad_x)
+    y2p = min(h, y2 + pad_y)
+    crop = frame[y1p:y2p, x1p:x2p]
+    if crop.size == 0:
+        return ""
+    _, buffer = cv2.imencode(".jpg", crop)
+    return base64.b64encode(buffer).decode("utf-8")

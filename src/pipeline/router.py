@@ -12,6 +12,12 @@ DEFAULT_VERIFICATION_PROMPT = (
     "Given the original question, is this track a plausible match? Answer Yes or No."
 )
 
+class SimpleRouter:
+    """Minimal router that echoes the question into an ExecutionPlan."""
+
+    def build_plan(self, question: str) -> ExecutionPlan:
+        return ExecutionPlan(description=question or "a person")
+
 
 @dataclass
 class ExecutionPlan:
@@ -20,6 +26,7 @@ class ExecutionPlan:
     needed_facts: List[str] = field(default_factory=list)
     constraints: Dict[str, Any] = field(default_factory=dict)
     verification_prompt: str = DEFAULT_VERIFICATION_PROMPT
+    meta: Dict[str, Any] = field(default_factory=dict)  # 可附加 need_context 等决策信号
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -28,6 +35,7 @@ class ExecutionPlan:
             "needed_facts": list(self.needed_facts),
             "constraints": dict(self.constraints),
             "verification_prompt": self.verification_prompt,
+            "meta": dict(self.meta),
         }
 
 
@@ -57,6 +65,7 @@ def parse_router_output(raw_output: str) -> Tuple[ExecutionPlan, str]:
         needed_facts=list(payload.get("needed_facts", [])),
         constraints=dict(payload.get("constraints", {})),
         verification_prompt=payload.get("verification_prompt") or DEFAULT_VERIFICATION_PROMPT,
+        meta=dict(payload.get("meta", {})),
     )
     think_log = payload.get("thoughts", "")
     return plan, think_log
