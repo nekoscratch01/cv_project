@@ -1,31 +1,29 @@
-# YOLO检测核心
-ultralytics>=8.0.0          # YOLOv8官方库，包含模型和推理引擎
+ultralytics>=8.0.0          # YOLOv8 (detection)
 
-# 深度学习框架
-torch>=2.0.0                # PyTorch，神经网络的基础
-torchvision>=0.15.0         # PyTorch的视觉工具包
+# Core DL
+torch>=2.0.0
+torchvision>=0.15.0
 
-# 计算机视觉基础
-opencv-python>=4.8.0        # OpenCV，视频/图像处理的瑞士军刀
-numpy>=1.24.0               # 数值计算基础
+# CV / math
+opencv-python>=4.8.0
+numpy>=1.24.0
 
-# 可视化
-matplotlib>=3.7.0           # 画图表
-Pillow>=10.0.0              # 图片处理
+# Visualization
+matplotlib>=3.7.0
+Pillow>=10.0.0
 
-# 数据处理
-pandas>=2.0.0               # CSV处理
+# Data utilities
+pandas>=2.0.0
 
-# 多目标跟踪（Stage 2）
-boxmot>=10.0.0              # ByteTrack等跟踪算法
+# Multi-object tracking
+boxmot>=10.0.0              # ByteTrack, etc.
 
-# 语义查询（Stage 4）
-transformers>=4.37.0        # CLIP等预训练模型
-huggingface_hub>=0.23.0     # 自动下载 HF 模型资产
+# Text/Vision models
+transformers>=4.37.0
+huggingface_hub>=0.23.0
 
 # API / orchestration / testing
-# fastapi pinned to satisfy google-adk (<0.119.0) while keeping recent features.
-fastapi>=0.115.0,<0.119.0
+fastapi>=0.115.0,<0.119.0   # pinned for google-adk compatibility
 uvicorn[standard]>=0.27.0
 celery>=5.3.0
 redis>=5.0.0
@@ -34,9 +32,9 @@ psycopg2-binary>=2.9.0
 structlog>=24.0.0
 pytest>=8.1.0
 pytest-asyncio>=0.23.0
-jedi>=0.16  # satisfy ipython 7.34.0 dependency
+jedi>=0.16                  # satisfy ipython 7.34.0
 
-# VLM / vLLM
+# VLM / serving
 vllm>=0.6.0
 qwen-vl-utils
 openai>=1.37.0
