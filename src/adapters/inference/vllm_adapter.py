@@ -112,7 +112,7 @@ class VllmAdapter:
                     video_path=video_path,
                     frame_range=(start_f, end_f),
                     limit=self.config.frame_sampling_count,
-                    draw_boxes=need_context,
+                    draw_boxes=False,  # ablation: filmstrip/contexts without red boxes
                     return_frames=True,
                 )
                 # 提取每个目标的最佳特写
