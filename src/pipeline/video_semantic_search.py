@@ -2,7 +2,7 @@
 
 Pipeline:
 - build_index: perception -> features -> evidence map.
-- question_search: router -> recall -> hard rules -> VLM verifier (MATCH line).
+- question_search: router -> recall -> VLM verifier (MATCH line).
 - Outputs both result video (matched tracks) and all-tracks debug video.
 """
 
@@ -20,7 +20,6 @@ from core.features import TrackFeatureExtractor
 from core.evidence import build_evidence_packages
 from pipeline.recall import RecallEngine
 from pipeline.clip_filter import ClipFilter
-from core.hard_rules import HardRuleEngine
 from core.vlm_types import QueryResult
 from typing import Any
 
@@ -84,7 +83,6 @@ class VideoSemanticSystem:
         recall_engine: RecallEngine | None = None,
         vlm_client: object | None = None,
         router: Any | None = None,
-        hard_rule_engine: HardRuleEngine | None = None,
     ) -> None:
         """
         初始化视频语义检索系统。
@@ -113,60 +111,22 @@ class VideoSemanticSystem:
         self.recall_engine = recall_engine or RecallEngine(config=self.config)
         self.vlm_client = vlm_client or self._build_vlm_client()
         self.router = router or self._build_router()
-        self.hard_rule_engine = hard_rule_engine
         self.clip_filter = None  # 延迟加载
 
     def build_index(self) -> None:
         """
-        建立视频索引：离线处理视频，生成所有人的证据包。
-        
-        这是系统的"索引阶段"，负责把原始视频处理成结构化数据。
-        只需要运行一次，处理完后可以多次查询。
-        
-        工作流程（3个阶段）：
-        
-        Stage 1: Perception（感知）
-            - 输入：视频文件
-            - 处理：YOLO检测 + ByteTrack跟踪
-            - 输出：track_records（每个人的帧号、框、裁剪图）
-                   metadata（视频的fps、分辨率等）
-            - 耗时：主要瓶颈（需要逐帧处理视频）
-        
-        Stage 2: Feature Extraction（特征提取）
-            - 输入：track_records + metadata
-            - 处理：计算运动特征（速度、路径长度、持续时间）
-            - 输出：features（每个人的运动统计数据）
-            - 耗时：很快（只是数值计算）
-        
-        Stage 3: Evidence Building（证据包构建）
-            - 输入：track_records + metadata + features
-            - 处理：把分散的数据打包成统一格式
-            - 输出：evidence_map（每个人的完整档案）
-            - 耗时：很快（只是数据重组）
-        
-        最后：持久化到磁盘
-            - 保存 semantic_database.json（包含所有轨迹和特征）
-            - 方便调试、恢复、分析
-        
+        Build the offline index for a video (run once, query many times).
+
+        Stages:
+        1) Perception: YOLO + ByteTrack → track_records + metadata.
+        2) Features: motion stats (speed/linearity/scale) per track.
+        3) Evidence: package tracks + features into evidence_map.
+
+        Persists:
+        - semantic_database.json under config.output_dir
+
         Returns:
-            None（结果保存在 self.track_records, self.features, self.evidence_map）
-        
-        Raises:
-            可能的异常：
-            - 视频文件不存在或损坏
-            - YOLO模型加载失败
-            - 磁盘空间不足（裁剪图和数据库文件）
-        
-        Note:
-            - 这个方法会修改 self 的多个属性（track_records等）
-            - 处理时间取决于视频长度和分辨率（例如5分钟视频约需5-10分钟）
-            - 输出目录会自动创建（config.output_dir）
-            - 可以多次调用，会覆盖之前的结果
-        
-        使用示例：
-            system = VideoSemanticSystem()
-            system.build_index()  # 处理视频，生成索引
-            # 之后可以多次查询，不需要重新索引
+            None. Results are stored on self.track_records, self.features, self.evidence_map.
         """
         print("\n=== Stage 1: Perception ===")
         # 感知层：检测和跟踪
@@ -471,15 +431,6 @@ class VideoSemanticSystem:
         out.release()
         if frames == 0:
             print(f"   ⚠️ Raw video copy has 0 frames: {output_path}")
-
-    def _ensure_hard_rule_engine(self) -> HardRuleEngine:
-        if self.hard_rule_engine is None:
-            if self.metadata is None:
-                raise RuntimeError("Missing metadata; cannot initialize HardRuleEngine")
-            self.hard_rule_engine = HardRuleEngine(self.config, self.metadata)
-        elif self.hard_rule_engine.metadata is None and self.metadata is not None:
-            self.hard_rule_engine.metadata = self.metadata
-        return self.hard_rule_engine
 
     def _build_router(self):
         if self.config.router_backend == "simple":

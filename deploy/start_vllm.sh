@@ -3,6 +3,11 @@
 
 set -euo pipefail
 
+# Force a supported attention backend; avoid TORCH_SDPA registration errors
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+
+# If your GPU does not support bfloat16, change to float16 below
+
 python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen3-VL-4B-Instruct \
     --trust-remote-code \
