@@ -1,8 +1,8 @@
-"""Phase 1 entry point: question-driven person retrieval (v2.1).
+"""Phase 2.7 entry point: question-driven person retrieval (v2.7).
 
 Pipeline:
-- build_index: perception -> features -> evidence map.
-- question_search: router -> recall -> VLM verifier (MATCH line).
+- build_index: perception -> features -> evidence map -> SigLIP embeddings cache.
+- question_search: router -> QuerySpec -> SigLIP soft rerank -> VLM verifier (MATCH line).
 - Outputs both result video (matched tracks) and all-tracks debug video.
 """
 
@@ -18,12 +18,12 @@ from core.config import SystemConfig
 from core.perception import VideoPerception
 from core.features import TrackFeatureExtractor
 from core.evidence import build_evidence_packages
+from core.query_spec import QueryBudget, QuerySpec
 from pipeline.recall import RecallEngine
-from pipeline.clip_filter import ClipFilter
 from core.vlm_types import QueryResult
 from typing import Any
 
-VERSION = "v2.1"
+VERSION = "v2.7"
 
 
 class VideoSemanticSystem:
@@ -50,7 +50,7 @@ class VideoSemanticSystem:
     【阶段二：问题检索】question_search(question)
         用户问题："找穿紫色衣服的人"
           ↓
-        1. Recall（召回层）：快速筛选 → 选出候选人（Phase 1返回所有人）
+        1. SigLIP Soft-Rerank（召回层）：QuerySpec → 相似度排序 → 自适应候选池
           ↓
         2. VLM（精排层）：AI判断 → 哪些人匹配？为什么？
           ↓
@@ -111,7 +111,6 @@ class VideoSemanticSystem:
         self.recall_engine = recall_engine or RecallEngine(config=self.config)
         self.vlm_client = vlm_client or self._build_vlm_client()
         self.router = router or self._build_router()
-        self.clip_filter = None  # 延迟加载
 
     def build_index(self) -> None:
         """
@@ -148,8 +147,18 @@ class VideoSemanticSystem:
             self.metadata,
             self.features,
             video_path=str(self.config.video_path),
+            output_dir=self.config.output_dir,
         )
         print(f"   ✅ Built {len(self.evidence_map)} evidence packages")
+
+        if getattr(self.config, "enable_siglip_rerank", False):
+            print("\n=== Stage 4: SigLIP Embeddings ===")
+            frames_per_track = getattr(self.config, "siglip_frames_per_track", 3)
+            count = self.recall_engine.precompute_embeddings(
+                list(self.evidence_map.values()),
+                frames_per_track=frames_per_track,
+            )
+            print(f"   ✅ SigLIP embeddings cached: {count}")
 
         # 持久化：保存到磁盘
         self._persist_database()
@@ -163,11 +172,11 @@ class VideoSemanticSystem:
         
         工作流程（4个步骤）：
         
-        Step 1: 召回（Recall）
+        Step 1: SigLIP Soft-Rerank（Recall）
             - 输入：问题 + 所有证据包
-            - 处理：快速筛选候选人（Phase 1返回所有人）
+            - 处理：QuerySpec → SigLIP 打分排序 → margin 自适应候选池
             - 输出：候选证据包列表
-            - 目的：减少VLM的工作量（未来版本会做真正的过滤）
+            - 目的：减少VLM的工作量（不做硬阈值误杀）
         
         Step 2: VLM精排（VLM Ranking）
             - 输入：问题 + 候选证据包
@@ -188,7 +197,7 @@ class VideoSemanticSystem:
                           "找背圆形背包的人"
             recall_limit: 召回阶段的候选数量限制（可选）
                          例如：recall_limit=20 表示最多给VLM看20个候选
-                         如果为 None，Phase 1会返回所有轨迹
+                         如果为 None，使用 QuerySpec 的 k_max
         
         Returns:
             匹配结果列表，格式：[QueryResult, QueryResult, ...]（全部匹配，不截断）
@@ -234,37 +243,39 @@ class VideoSemanticSystem:
             plan = self._run_coroutine(plan)
         print("   🧭 Routing plan:", plan.to_dict())
 
-        # Step 1: 召回阶段（筛选候选）
+        query_spec = self._build_query_spec_from_plan(plan, question)
+        if recall_limit is not None:
+            k_max = min(query_spec.budget.k_max, recall_limit)
+            k_min = min(query_spec.budget.k_min, k_max)
+            query_spec = query_spec.with_budget(k_min=k_min, k_max=k_max)
+        plan.meta["query_spec"] = query_spec.to_dict()
+        plan.meta["need_context"] = query_spec.need_context
+        print("   🧩 QuerySpec:", query_spec.to_dict())
+
+        # Step 1: SigLIP Soft-Rerank（排序 + 自适应候选压缩）
         all_tracks = list(self.evidence_map.values())
-        recall_top_k = recall_limit or len(all_tracks)
-        plan.constraints["limit"] = len(all_tracks)
-        candidates = self.recall_engine.visual_filter(
-            all_tracks,
-            description=plan.description,
-            visual_tags=plan.visual_tags,
-            top_k=recall_top_k,
-        )
-        print(f"   🔎 Candidate tracks: {len(candidates)}")
-
-        # Step 1.1: CLIP/SigLIP 预过滤（外观快速筛，默认关闭，由配置控制）
-        if getattr(self.config, "enable_clip_filter", False):
-            if self.clip_filter is None:
-                try:
-                    self.clip_filter = ClipFilter(model_name=self.config.siglip_model_name, device=self.config.siglip_device)
-                except Exception as exc:  # noqa: BLE001
-                    print(f"   ⚠️ CLIP filter init failed: {exc}")
-                    self.clip_filter = None
-            if self.clip_filter is not None:
-                before = len(candidates)
-                threshold = getattr(self.config, "clip_filter_threshold", 0.05)
-                candidates = self.clip_filter.filter_candidates(plan.description or plan.visual_tags, candidates, threshold=threshold)
-                print(f"   🧊 After CLIP filter: {len(candidates)} (filtered {before - len(candidates)}, thr={threshold})")
+        candidates: list = []
+        ranked_scores: list = []
+        if getattr(self.config, "enable_siglip_rerank", True):
+            candidates, ranked_scores = self.recall_engine.siglip_soft_rerank(all_tracks, query_spec)
+            print(f"   🧊 SigLIP soft rerank candidates: {len(candidates)}")
+            self._print_siglip_scores(ranked_scores)
         else:
-            print("   🧊 CLIP filter disabled (enable_clip_filter=False)")
+            recall_top_k = recall_limit or len(all_tracks)
+            candidates = self.recall_engine.visual_filter(
+                all_tracks,
+                description=plan.description,
+                visual_tags=plan.visual_tags,
+                top_k=recall_top_k,
+            )
+            print(f"   🔎 Candidate tracks: {len(candidates)}")
 
-        # Step 1.5: Hard Rule Engine（已移除，保留 CLIP + VLM 双层过滤）
+        # Step 1.5: Hard Rule Engine（已移除，保留 SigLIP + VLM 双层过滤）
         if not candidates:
-            print("   ❌ No candidates after CLIP")
+            if getattr(self.config, "enable_siglip_rerank", True):
+                print("   ❌ No candidates after SigLIP rerank")
+            else:
+                print("   ❌ No candidates after recall")
             return []
 
         # Step 2: VLM精排阶段（AI判断）
@@ -391,6 +402,61 @@ class VideoSemanticSystem:
         except Exception:
             return ""
 
+    def _build_query_spec_from_plan(self, plan, question: str) -> QuerySpec:
+        meta = getattr(plan, "meta", {}) or {}
+        payload = meta.get("query_spec")
+        if not isinstance(payload, dict):
+            raise RuntimeError("Router did not return query_spec")
+
+        positive = list(payload.get("positive_prompts") or [])
+        negative = list(payload.get("negative_prompts") or [])
+        if not positive:
+            raise RuntimeError("Router query_spec missing positive_prompts")
+
+        need_context = bool(payload.get("need_context", False))
+        intents = list(payload.get("constraint_intents") or [])
+        budget = QueryBudget(
+            k_min=self.config.siglip_rerank_k_min,
+            k_max=self.config.siglip_rerank_k_max,
+            margin_delta=self.config.siglip_rerank_margin_delta,
+            frames_per_track=self.config.siglip_frames_per_track,
+            topm_frames=self.config.siglip_topm_frames,
+        )
+        return QuerySpec(
+            raw_query=question,
+            positive_prompts=positive,
+            negative_prompts=negative,
+            need_context=need_context,
+            constraint_intents=intents,
+            budget=budget,
+        )
+
+    @staticmethod
+    def _print_siglip_scores(scores: list, limit: int = 30) -> None:
+        if not scores:
+            print("   🧊 SigLIP scores: (none)")
+            return
+        show = min(limit, len(scores))
+        print(f"   🧊 Ranked scores (top {show}/{len(scores)}):")
+        for rank, item in enumerate(scores[:show], start=1):
+            track_id = getattr(item, "track_id", None)
+            final_rank = float(getattr(item, "final_rank", 0.0) or 0.0)
+            siglip_score = float(getattr(item, "siglip_score", 0.0) or 0.0)
+            constraint_score = float(getattr(item, "constraint_score", 0.0) or 0.0)
+            quality_score = float(getattr(item, "quality_score", 0.0) or 0.0)
+            breakdown = getattr(item, "constraint_breakdown", None) or {}
+            breakdown_str = ""
+            if breakdown:
+                parts = [f"{k}={v:.2f}" for k, v in sorted(breakdown.items())]
+                breakdown_str = f" intents=[{', '.join(parts)}]"
+            print(
+                f"      {rank:02d}. track {track_id} final={final_rank:.4f} "
+                f"siglip={siglip_score:.4f} constraint={constraint_score:.4f} "
+                f"quality={quality_score:.4f}{breakdown_str}"
+            )
+        if len(scores) > show:
+            print(f"      ... ({len(scores)} total)")
+
     def _run_coroutine(self, coro):
         try:
             return asyncio.run(coro)
@@ -433,9 +499,6 @@ class VideoSemanticSystem:
             print(f"   ⚠️ Raw video copy has 0 frames: {output_path}")
 
     def _build_router(self):
-        if self.config.router_backend == "simple":
-            from pipeline.router import SimpleRouter
-            return SimpleRouter()
         if self.config.router_backend == "vllm":
             from pipeline.router_vlm import VlmRouter
 

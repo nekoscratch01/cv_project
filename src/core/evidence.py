@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,11 +33,13 @@ class EvidencePackage:
         frames: 这个人出现在哪些帧，例如 [1, 2, 3, ..., 900]
         bboxes: 每一帧中的检测框，例如 [(50,100,150,300), ...]
         crops: 保存的裁剪图文件路径列表，例如 ["crops/id001_frame00001.jpg", ...]
+        crops_k: 代表照列表（K=3: best/mid/end），用于 SigLIP 聚合
         fps: 视频帧率，用于将帧号转换成时间
         features: Atomic 8 特征对象（可选）
         meta: 额外元数据（video_id/fps/resolution 等）
         raw_trace: 对齐后的整段检测框序列
         embedding: 视觉向量（SigLIP/CLIP 预留字段）
+        siglip_img_embeds: SigLIP 多帧图像向量（K x D）
     
     使用示例：
         package = evidence_map[1]
@@ -56,6 +58,8 @@ class EvidencePackage:
     meta: Optional[Dict[str, Any]] = None
     raw_trace: Optional[List[Tuple[int, int, int, int]]] = None
     embedding: Optional[List[float]] = None
+    siglip_img_embeds: Optional[List[List[float]]] = None
+    crops_k: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.meta is None:
@@ -122,6 +126,7 @@ def build_evidence_packages(
     metadata: VideoMetadata,
     features: Dict[int, TrackFeatures],
     video_path: str | Path = "",
+    output_dir: str | Path | None = None,
 ) -> Dict[int, EvidencePackage]:
     """
     构建证据包字典：把分散的数据打包成统一格式。
@@ -142,6 +147,7 @@ def build_evidence_packages(
                  主要需要 fps 字段
         features: 特征字典，来自 TrackFeatureExtractor.extract()
                  格式：{1: TrackFeatures(...), 2: TrackFeatures(...), ...}
+        output_dir: 输出目录，用于保存代表照 crops_k（可选）
     
     Returns:
         证据包字典，格式：{track_id: EvidencePackage, ...}
@@ -158,15 +164,37 @@ def build_evidence_packages(
         features = feature_extractor.extract(track_records)
         
         # 打包
-        evidence_map = build_evidence_packages("video1", track_records, metadata, features)
+        evidence_map = build_evidence_packages(
+            "video1", track_records, metadata, features, output_dir="output"
+        )
         
         # 使用
         package = evidence_map[1]
         print(f"找到 track {package.track_id}，出现时间 {package.start_time_seconds}s")
     """
     packages: Dict[int, EvidencePackage] = {}
+    cap = None
+    if video_path:
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            cap = None
+    crops_k_dir = None
+    if cap is not None:
+        output_root = Path(output_dir) if output_dir else Path("output")
+        crops_k_dir = output_root / "crops_k" / str(video_id)
+        crops_k_dir.mkdir(parents=True, exist_ok=True)
+
     for track_id, record in track_records.items():
         best_idx = _select_best_bbox_index(record, metadata)
+        crops_k = []
+        if cap is not None and crops_k_dir is not None:
+            crops_k = _build_multi_crops(
+                cap=cap,
+                record=record,
+                best_idx=best_idx,
+                crops_k_dir=crops_k_dir,
+                track_id=track_id,
+            )
         packages[track_id] = EvidencePackage(
             video_id=video_id,
             video_path=str(video_path) if video_path else "",
@@ -183,7 +211,10 @@ def build_evidence_packages(
                 "resolution": (metadata.width, metadata.height),
             },
             raw_trace=list(record.bboxes),
+            crops_k=crops_k,
         )
+    if cap is not None:
+        cap.release()
     return packages
 
 
@@ -217,6 +248,68 @@ def _select_best_bbox_index(record: TrackRecord, meta: VideoMetadata) -> int:
         areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in record.bboxes]
         best_idx = int(np.argmax(areas)) if areas else -1
     return best_idx
+
+
+def _build_multi_crops(
+    *,
+    cap: cv2.VideoCapture | None,
+    record: TrackRecord,
+    best_idx: int,
+    crops_k_dir: Path,
+    track_id: int,
+    pad: float = 0.15,
+) -> List[str]:
+    if cap is None or not record.frames or not record.bboxes:
+        return []
+
+    candidates = [
+        ("best", best_idx),
+        ("mid", len(record.bboxes) // 2),
+        ("end", len(record.bboxes) - 1),
+    ]
+    seen = set()
+    crops: List[str] = []
+    for label, idx in candidates:
+        if idx < 0 or idx >= len(record.bboxes) or idx in seen:
+            continue
+        seen.add(idx)
+        frame_id = record.frames[idx]
+        bbox = record.bboxes[idx]
+        out_path = crops_k_dir / f"id{track_id:03d}_{label}.jpg"
+        crop_path = _extract_crop_to_path(cap, frame_id, bbox, out_path, pad=pad)
+        if crop_path:
+            crops.append(crop_path)
+    return crops
+
+
+def _extract_crop_to_path(
+    cap: cv2.VideoCapture,
+    frame_id: int,
+    bbox: Tuple[int, int, int, int],
+    out_path: Path,
+    *,
+    pad: float,
+) -> str:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+    ret, frame = cap.read()
+    if not ret:
+        return ""
+
+    x1, y1, x2, y2 = bbox
+    h, w = frame.shape[:2]
+    pad_x = int((x2 - x1) * pad)
+    pad_y = int((y2 - y1) * pad)
+    x1p = max(0, x1 - pad_x)
+    y1p = max(0, y1 - pad_y)
+    x2p = min(w, x2 + pad_x)
+    y2p = min(h, y2 + pad_y)
+    crop = frame[y1p:y2p, x1p:x2p]
+    if crop.size == 0:
+        return ""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if cv2.imwrite(str(out_path), crop):
+        return str(out_path)
+    return ""
 
 
 def extract_best_crop_from_package(pkg: EvidencePackage, pad: float = 0.15) -> str:

@@ -10,7 +10,10 @@ sys.path.append(str(Path(__file__).parent.parent / "src"))
 from core.config import SystemConfig
 from core.evidence import EvidencePackage, build_evidence_packages
 from core.features import TrackFeatureExtractor, TrackFeatures
+from core.constraints import score_constraints
 from core.perception import TrackRecord, VideoMetadata
+from core.query_spec import QuerySpec, QuerySpecExtractor, QueryBudget
+from pipeline.router import ExecutionPlan
 from pipeline.recall import RecallEngine
 from pipeline.video_semantic_search import VideoSemanticSystem
 from core.vlm_types import QueryResult
@@ -52,14 +55,108 @@ class StubVLMClient:
         return results
 
 
+class StubRouter:
+    """Minimal router stub for tests (no external vLLM dependency)."""
+
+    def build_plan(self, question: str) -> ExecutionPlan:
+        query_spec = {
+            "positive_prompts": [question or "a person"],
+            "negative_prompts": [],
+            "need_context": False,
+            "constraint_intents": [],
+        }
+        return ExecutionPlan(
+            description=question or "a person",
+            meta={"need_context": False, "query_spec": query_spec},
+        )
+
+
 class DummySiglipClient:
     embedding_dim = 2
 
     def encode_text(self, texts):
-        return np.array([[1.0, 0.0]], dtype=np.float32)
+        if not texts:
+            return np.zeros((0, 2), dtype=np.float32)
+        return np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (len(texts), 1))
 
     def encode_images(self, images):
         return np.ones((len(images), 2), dtype=np.float32)
+
+
+def test_query_spec_extractor_color_garment():
+    extractor = QuerySpecExtractor(SystemConfig())
+    spec = extractor.extract("Find the person in a blue shirt")
+    assert spec.positive_prompts[0] == "person wearing a blue shirt"
+
+
+def test_query_spec_extractor_negative_prompt():
+    extractor = QuerySpecExtractor(SystemConfig())
+    spec = extractor.extract("Find a person not wearing red")
+    assert "person wearing red clothing" in spec.negative_prompts
+    assert spec.positive_prompts[0] != "person wearing red clothing"
+
+
+def test_score_tracks_topm_mean(tmp_path):
+    config = SystemConfig(embedding_cache_dir=tmp_path / "embeddings")
+    engine = RecallEngine(config=config, siglip_client=DummySiglipClient())
+    pkg = EvidencePackage(
+        "demo",
+        1,
+        [1],
+        [(0, 0, 1, 1)],
+        ["c1.jpg"],
+        30.0,
+        None,
+        siglip_img_embeds=[[1.0, 0.0], [0.0, 1.0]],
+    )
+    scores = engine.score_tracks([pkg], positive_prompts=["anything"], frames_per_track=2, topm=2)
+    assert math.isclose(scores[0][1], 0.5)
+
+
+def test_siglip_soft_rerank_margin_clamps(tmp_path):
+    config = SystemConfig(embedding_cache_dir=tmp_path / "embeddings")
+    engine = RecallEngine(config=config, siglip_client=DummySiglipClient())
+    pkgs = [
+        EvidencePackage(
+            "demo",
+            1,
+            [1],
+            [(0, 0, 1, 1)],
+            ["c1.jpg"],
+            30.0,
+            None,
+            siglip_img_embeds=[[1.0, 0.0]],
+        ),
+        EvidencePackage(
+            "demo",
+            2,
+            [1],
+            [(0, 0, 1, 1)],
+            ["c2.jpg"],
+            30.0,
+            None,
+            siglip_img_embeds=[[0.5, 0.0]],
+        ),
+        EvidencePackage(
+            "demo",
+            3,
+            [1],
+            [(0, 0, 1, 1)],
+            ["c3.jpg"],
+            30.0,
+            None,
+            siglip_img_embeds=[[0.0, 1.0]],
+        ),
+    ]
+    query_spec = QuerySpec(
+        raw_query="anything",
+        positive_prompts=["anything"],
+        negative_prompts=[],
+        budget=QueryBudget(k_min=2, k_max=3, margin_delta=0.1, frames_per_track=1, topm_frames=1),
+    )
+    candidates, ranked = engine.siglip_soft_rerank(pkgs, query_spec)
+    assert len(ranked) == 3
+    assert len(candidates) == 2
 
 
 def test_build_evidence_packages_computes_timings():
@@ -129,6 +226,7 @@ def test_question_search_uses_stub_vlm(tmp_path):
         config=config,
         recall_engine=recall_engine,
         vlm_client=StubVLMClient({1: "wearing red clothes"}),
+        router=StubRouter(),
     )
 
     track_records = {1: _make_track_record(1), 2: _make_track_record(2)}
@@ -177,3 +275,66 @@ def test_track_feature_extractor_outputs_atomic_fields():
     assert math.isclose(features.centroids[0][1], 0.1)
     assert math.isclose(features.displacement_vec[0], 0.4)
     assert math.isclose(features.displacement_vec[1], 0.2)
+
+
+def test_linearity_unit_consistency():
+    metadata = VideoMetadata(fps=10.0, width=100, height=100, total_frames=100)
+    straight = TrackRecord(
+        track_id=1,
+        frames=[0, 1, 2, 3],
+        bboxes=[(0, 0, 10, 10), (10, 0, 20, 10), (20, 0, 30, 10), (30, 0, 40, 10)],
+        crops=[],
+    )
+    back_and_forth = TrackRecord(
+        track_id=2,
+        frames=[0, 1, 2, 3],
+        bboxes=[(0, 0, 10, 10), (10, 0, 20, 10), (0, 0, 10, 10), (10, 0, 20, 10)],
+        crops=[],
+    )
+    extractor = TrackFeatureExtractor(metadata)
+    straight_feat = extractor.extract({1: straight})[1]
+    back_feat = extractor.extract({2: back_and_forth})[2]
+
+    assert straight_feat.linearity > 0.95
+    assert back_feat.linearity < 0.6
+
+
+def test_scale_change_uses_height_ratio():
+    metadata = VideoMetadata(fps=10.0, width=100, height=100, total_frames=100)
+    track = TrackRecord(
+        track_id=1,
+        frames=[0, 1, 2, 3, 4, 5],
+        bboxes=[
+            (0, 0, 10, 10),
+            (0, 0, 10, 10),
+            (0, 0, 10, 10),
+            (0, 0, 10, 20),
+            (0, 0, 10, 20),
+            (0, 0, 10, 20),
+        ],
+        crops=[],
+    )
+    features = TrackFeatureExtractor(metadata).extract({1: track})[1]
+    assert math.isclose(features.scale_change, 2.0, rel_tol=1e-2)
+
+
+def test_constraint_score_intent_gating():
+    feats = TrackFeatures(
+        track_id=1,
+        start_s=0.0,
+        end_s=1.0,
+        duration_s=1.0,
+        centroids=[(0.1, 0.1)],
+        displacement_vec=(0.2, 0.0),
+        avg_speed_px_s=10.0,
+        max_speed_px_s=10.0,
+        path_length_px=10.0,
+        norm_speed=2.0,
+        linearity=0.9,
+        scale_change=1.0,
+    )
+    score_empty, _ = score_constraints([], feats)
+    score_run, breakdown = score_constraints(["RUNNING"], feats)
+    assert score_empty == 0.0
+    assert score_run > 0.5
+    assert "RUNNING" in breakdown

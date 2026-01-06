@@ -33,20 +33,30 @@ class SystemConfig:
     vlm_temperature: float = 0.1
     vlm_max_new_tokens: int = 1024  # 提高上限，避免批次回答被截断
     vlm_batch_size: int = 4
-    # Router 默认改为轻量 simple（避免 transformers 依赖）
-    router_backend: str = "simple"
+    # Router 默认走 vLLM（强制判定 need_context）
+    router_backend: str = "vllm"
     router_gguf_path: Path | None = None
     router_max_new_tokens: int = 256
     router_temperature: float = 0.2
     siglip_model_name: str = "google/siglip-base-patch16-224"
     siglip_device: str = "cuda"
+    enable_siglip_rerank: bool = True
+    siglip_rerank_k_min: int = 10
+    siglip_rerank_k_max: int = 60
+    siglip_rerank_margin_delta: float = 0.08
+    siglip_frames_per_track: int = 3
+    siglip_topm_frames: int = 2
+    siglip_neg_prompt_lambda: float = 0.5
+    enable_constraints: bool = True
+    constraint_weight: float = 0.2
+    quality_weight: float = 0.05
     clip_filter_threshold: float = 0.05  # 放宽相似度阈值，避免误杀
     embedding_cache_dir: Path = Path("output/embeddings")
     # Filmstrip (Layer2) settings
     filmstrip_enabled: bool = True
     filmstrip_frame_count: int = 5
     filmstrip_max_width: int = 4096  # 最终拼接图的最大宽度
-    enable_clip_filter: bool = False  # CLIP/SigLIP 召回预过滤开关（临时关闭以便直接进入 VLM）
+    enable_clip_filter: bool = False  # CLIP/SigLIP 召回预过滤开关（临时关闭以便直接进入 VLM，legacy threshold filter）
 
     # Visualization
     highlight_color: tuple[int, int, int] = (0, 0, 255)
