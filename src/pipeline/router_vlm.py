@@ -89,7 +89,6 @@ class VlmRouter:
             },
         )
 
-    @staticmethod
     async def _request_payload(self, query: str, system_prompt: str) -> Tuple[Dict[str, Any], str]:
         response = await self.client.chat.completions.create(
             model=self.model,
