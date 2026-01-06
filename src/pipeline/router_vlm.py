@@ -3,66 +3,54 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from openai import AsyncOpenAI
 
+from core.constraints import VALID_INTENTS
 from pipeline.router import ExecutionPlan
 
 ROUTER_SYSTEM_PROMPT = """
-You are the Search Planner for a video surveillance system.
-Analyze the User Query and produce a JSON execution plan.
+You are the QuerySpec router for a video search system.
+Analyze the user query and output JSON ONLY with this schema:
 
-Decision Logic:
-1) need_context = false: query only talks about appearance (color/clothes/gender/object).
-   Examples: "person wearing a blue shirt", "child with a red backpack".
-2) need_context = true: query involves motion/environment/interaction.
-   Examples: "person running", "leaving the shop", "wandering at the door".
-
-Constraints (only set if explicitly implied by the query):
-- norm_speed (body_heights/s): Fast >1.8; Walk 0.0-1.8; Static <0.1
-  * If the query does NOT mention motion speed, DO NOT set this.
-- linearity (0-1): Wandering <0.3; Direct >0.7
-  * Default unset if the query doesn't imply path shape.
-- scale_change: Approaching >1.2; Leaving <0.8
-  * Default unset if the query doesn't imply depth change.
-
-### EXAMPLES (follow strictly)
-User: "Find the person wearing a blue shirt."
-Reasoning: Appearance only, no motion.
-JSON:
 {
-  "visual_description": "person wearing a blue shirt",
-  "visual_tags": ["blue shirt"],
-  "hard_rules": {},
-  "need_context": false
+  "positive_prompts": ["person wearing a blue shirt"],
+  "negative_prompts": [],
+  "need_context": false,
+  "constraint_intents": []
 }
 
-User: "Find the man running fast towards the camera."
-Reasoning: High speed + approaching.
-JSON:
+Rules:
+1) positive_prompts must describe APPEARANCE ONLY (color/clothes/accessories).
+2) positive_prompts: 1-5 items, each <= 8 words.
+3) negative_prompts: 0-3 items, only when the query explicitly negates.
+4) need_context = true only if the query explicitly mentions motion, direction, interaction, or environment.
+5) constraint_intents: 0-5 labels ONLY (no numbers, no thresholds).
+6) Do NOT output hard_rules, min/max, or any threshold structures.
+7) Output JSON only (no extra text).
+
+Allowed constraint_intents:
+RUNNING, WALKING, STOPPED, APPROACHING, LEAVING, WANDERING, MOVING_LEFT, MOVING_RIGHT
+"""
+
+ROUTER_REPAIR_PROMPT = """
+Your previous output was invalid. Fix it and output ONLY valid JSON for the schema:
+
 {
-  "visual_description": "man running fast",
-  "visual_tags": ["man", "running"],
-  "hard_rules": {
-    "norm_speed": {"min": 1.8, "max": 10.0},
-    "scale_change": {"min": 1.2, "max": 10.0}
-  },
-  "need_context": true
+  "positive_prompts": ["person wearing a blue shirt"],
+  "negative_prompts": [],
+  "need_context": false,
+  "constraint_intents": []
 }
 
-User: "Where is the child with the red backpack?"
-Reasoning: Appearance only, no motion.
-JSON:
-{
-  "visual_description": "child with red backpack",
-  "visual_tags": ["child", "red backpack"],
-  "hard_rules": {},
-  "need_context": false
-}
-
-Remember: If the user does NOT mention speed/path/depth, the 'hard_rules' object MUST be empty.
-Output JSON ONLY.
+Rules:
+- No hard_rules or numeric thresholds.
+- positive_prompts: 1-5 items, each <= 8 words.
+- negative_prompts: 0-3 items.
+- constraint_intents: 0-5 items.
+- No extra keys.
+- Output JSON only.
 """
 
 
@@ -74,47 +62,45 @@ class VlmRouter:
         self.model = model
 
     async def build_plan(self, query: str) -> ExecutionPlan:
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-                    {"role": "user", "content": query},
-                ],
-                temperature=0.1,
-                max_tokens=256,
-            )
-            content = response.choices[0].message.content or ""
-            payload = self._parse_json(content)
-            constraints = payload.get("hard_rules") or {}
+        payload, raw_text = await self._request_payload(query, ROUTER_SYSTEM_PROMPT)
+        ok, reason = self._validate_payload(payload, raw_text)
+        if not ok:
+            payload, raw_text = await self._request_payload(query, ROUTER_REPAIR_PROMPT)
+            ok, reason = self._validate_payload(payload, raw_text)
+            if not ok:
+                raise RuntimeError(f"Router output invalid: {reason}")
 
-            # 兜底清洗：若查询无动作关键词则清空速度/路径/尺度约束
-            ql = query.lower()
-            motion_keywords = ["run", "walk", "fast", "slow", "move", "moving", "leave", "approach", "wander"]
-            if not any(k in ql for k in motion_keywords):
-                constraints = {}
-            else:
-                # 移除常见幻觉的 0.8-1.2 尺度约束
-                sc = constraints.get("scale_change")
-                if sc:
-                    try:
-                        mn = float(sc.get("min", -1))
-                        mx = float(sc.get("max", -1))
-                        if 0.79 <= mn <= 0.81 and 1.19 <= mx <= 1.21:
-                            constraints.pop("scale_change", None)
-                    except Exception:
-                        constraints.pop("scale_change", None)
+        payload = self._normalize_payload(payload)
+        query_spec = {
+            "positive_prompts": payload["positive_prompts"],
+            "negative_prompts": payload.get("negative_prompts", []),
+            "need_context": bool(payload.get("need_context", False)),
+            "constraint_intents": payload.get("constraint_intents", []),
+        }
+        description = query_spec["positive_prompts"][0] if query_spec["positive_prompts"] else query
+        return ExecutionPlan(
+            description=description or query,
+            visual_tags=[],
+            needed_facts=[],
+            constraints={},
+            meta={
+                "need_context": query_spec["need_context"],
+                "query_spec": query_spec,
+            },
+        )
 
-            return ExecutionPlan(
-                description=payload.get("visual_description") or query,
-                visual_tags=[],
-                needed_facts=[],
-                constraints=constraints,
-                meta={"need_context": payload.get("need_context", False)},
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[Router] vLLM routing failed: {exc}. Fallback to echo plan.")
-            return ExecutionPlan(description=query, constraints={})
+    async def _request_payload(self, query: str, system_prompt: str) -> Tuple[Dict[str, Any], str]:
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query},
+            ],
+            temperature=0.1,
+            max_tokens=256,
+        )
+        content = response.choices[0].message.content or ""
+        return self._parse_json(content), content
 
     @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:
@@ -125,6 +111,75 @@ class VlmRouter:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
             return {}
+
+    @staticmethod
+    def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        positive = [str(p).strip() for p in payload.get("positive_prompts", []) if str(p).strip()]
+        negative = [str(p).strip() for p in payload.get("negative_prompts", []) if str(p).strip()]
+        intents = [str(i).strip().upper() for i in payload.get("constraint_intents", []) if str(i).strip()]
+        return {
+            "positive_prompts": positive,
+            "negative_prompts": negative,
+            "need_context": bool(payload.get("need_context", False)),
+            "constraint_intents": intents,
+        }
+
+    @staticmethod
+    def _validate_payload(payload: Dict[str, Any], raw_text: str) -> Tuple[bool, str]:
+        if not payload:
+            return False, "empty_json"
+
+        allowed_keys = {"positive_prompts", "negative_prompts", "need_context", "constraint_intents"}
+        unknown = [k for k in payload.keys() if k not in allowed_keys]
+        if unknown:
+            return False, f"unknown_keys={unknown}"
+
+        raw_stripped = raw_text.strip()
+        json_match = re.search(r"\{.*\}", raw_text, re.S)
+        if not json_match:
+            return False, "missing_json_block"
+        if raw_stripped != json_match.group(0).strip():
+            return False, "extra_text"
+
+        if "hard_rules" in raw_text:
+            return False, "hard_rules_forbidden"
+        if "norm_speed" in raw_text or "linearity" in raw_text or "scale_change" in raw_text:
+            return False, "threshold_fields_forbidden"
+        if re.search(r"\"(min|max)\"", raw_text):
+            return False, "threshold_fields_forbidden"
+        if ">" in raw_text or "<" in raw_text:
+            return False, "threshold_operators_forbidden"
+
+        positive = payload.get("positive_prompts")
+        if not isinstance(positive, list) or not positive:
+            return False, "positive_prompts_missing"
+        if len(positive) > 5:
+            return False, "positive_prompts_too_many"
+        if any(not isinstance(p, str) or not p.strip() for p in positive):
+            return False, "positive_prompts_invalid"
+        if any(len(p.split()) > 8 for p in positive):
+            return False, "positive_prompts_too_long"
+
+        negative = payload.get("negative_prompts", [])
+        if not isinstance(negative, list) or any(not isinstance(p, str) for p in negative):
+            return False, "negative_prompts_invalid"
+        if len(negative) > 3:
+            return False, "negative_prompts_too_many"
+
+        if not isinstance(payload.get("need_context"), bool):
+            return False, "need_context_invalid"
+
+        intents = payload.get("constraint_intents", [])
+        if not isinstance(intents, list) or any(not isinstance(i, str) for i in intents):
+            return False, "constraint_intents_invalid"
+        if len(intents) > 5:
+            return False, "constraint_intents_too_many"
+        intents_upper = [i.strip().upper() for i in intents if i.strip()]
+        invalid_intents = [i for i in intents_upper if i not in VALID_INTENTS]
+        if invalid_intents:
+            return False, f"invalid_intents={invalid_intents}"
+
+        return True, ""
 
 
 __all__ = ["VlmRouter"]

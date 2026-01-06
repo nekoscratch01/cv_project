@@ -110,11 +110,11 @@ class TrackFeatureExtractor:
         height = max(self.metadata.height, 1)
 
         for track_id, record in tracks.items():
-            # 计算中心点和面积，方便后续语义特征
+            # 计算中心点和尺寸，方便后续语义特征
             centers = [self._bbox_center(b) for b in record.bboxes]
             centroids = [self._normalize_center(c, width, height) for c in centers]
-            areas = [self._bbox_area(b) for b in record.bboxes]
-            avg_height = sum((b[3] - b[1]) for b in record.bboxes) / max(len(record.bboxes), 1)
+            heights = [max(b[3] - b[1], 1.0) for b in record.bboxes]
+            avg_height = sum(heights) / max(len(heights), 1)
 
             start_frame = record.frames[0] if record.frames else 0
             end_frame = record.frames[-1] if record.frames else 0
@@ -140,13 +140,17 @@ class TrackFeatureExtractor:
                 )
                 continue
             # 计算每个边界框的中心点坐标之间的距
-            distances = []  # 中心点坐标之间的距离
+            distances = []  # 像素中心点距离
+            distances_norm = []  # 归一化中心点距离
+            speed_norms = []  # 身高/秒
             speeds = []  # 速度
             total_length = 0.0  # 总长度
 
             for i in range(1, len(centers)):
                 c_prev, c_curr = centers[i - 1], centers[i]
                 dist = math.dist(c_prev, c_curr)
+                c_prev_n, c_curr_n = centroids[i - 1], centroids[i]
+                dist_norm = math.dist(c_prev_n, c_curr_n)
                 frame_delta = max(record.frames[i] - record.frames[i - 1], 1)
                 time_delta = frame_delta / fps
                 if time_delta <= 0:
@@ -154,27 +158,30 @@ class TrackFeatureExtractor:
                 speed = dist / time_delta
                 speeds.append(speed)
                 distances.append(dist)
+                distances_norm.append(dist_norm)
                 total_length += dist
+                height_ref = (heights[i - 1] + heights[i]) / 2.0
+                height_ref = max(height_ref, 1.0)
+                speed_norms.append(speed / height_ref)
 
             avg_speed = float(np.mean(speeds)) if speeds else 0.0
             max_speed = float(np.max(speeds)) if speeds else 0.0
 
-            # 归一化速度（身长/秒）：用平均框高作为身长尺度，加保护下限
-            norm_speed = 0.0
-            if duration_seconds > 0:
-                avg_height = max(avg_height, 10.0)
-                norm_speed = (avg_speed) / avg_height if avg_height > 0 else 0.0
+            # 归一化速度（身长/秒）：逐步按身高归一化，取中位数更稳
+            norm_speed = float(np.median(speed_norms)) if speed_norms else 0.0
 
-            # 线性度：位移 / 路径长度，极短路径视为徘徊
+            # 线性度：位移 / 路径长度（归一化单位）
             linearity = 0.0
-            if total_length >= 50.0:
-                linearity = float(math.hypot(*displacement_vec)) / max(total_length, 1.0)
+            total_length_norm = float(np.sum(distances_norm)) if distances_norm else 0.0
+            if total_length_norm > 1e-6:
+                linearity = float(math.hypot(*displacement_vec)) / max(total_length_norm, 1e-6)
 
-            # 尺度变化：前5帧平均面积 vs 后5帧平均面积，平滑抖动
-            head_area = np.mean(areas[:5]) if areas else 1.0
-            tail_area = np.mean(areas[-5:]) if areas else 1.0
-            head_area = max(head_area, 1.0)
-            scale_change = float(tail_area / head_area)
+            # 尺度变化：前后高度中位数比值（比面积更稳）
+            window = max(1, int(len(heights) * 0.2))
+            h_start = float(np.median(heights[:window])) if heights else 1.0
+            h_end = float(np.median(heights[-window:])) if heights else 1.0
+            h_start = max(h_start, 1.0)
+            scale_change = float(h_end / h_start)
 
             features[track_id] = TrackFeatures(
                 track_id=track_id,

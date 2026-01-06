@@ -112,7 +112,7 @@ class VllmAdapter:
                     video_path=video_path,
                     frame_range=(start_f, end_f),
                     limit=self.config.frame_sampling_count,
-                    draw_boxes=False,  # ablation: filmstrip/contexts without red boxes
+                    draw_boxes=need_context,  # ablation: filmstrip/contexts without red boxes
                     return_frames=True,
                 )
                 # 提取每个目标的最佳特写
@@ -251,19 +251,50 @@ class VllmAdapter:
     ) -> str:
         telemetry_lines: List[str] = []
         res_w, res_h = resolution
+        need_context = False
+        constraint_intents: List[str] = []
+
+        if plan_context:
+            try:
+                ctx = json.loads(plan_context)
+                meta = ctx.get("meta", {}) if isinstance(ctx, dict) else {}
+                need_context = bool(meta.get("need_context", False))
+                query_spec = meta.get("query_spec", {}) if isinstance(meta, dict) else {}
+                if isinstance(query_spec, dict):
+                    constraint_intents = list(query_spec.get("constraint_intents") or [])
+            except Exception:
+                need_context = False
+                constraint_intents = []
+
+        show_motion_facts = need_context
 
         for pkg in packages:
             feats = getattr(pkg, "features", None)
-            motion_desc = self._build_motion_description(feats)
             bbox = self._pick_mid_bbox(pkg.bboxes)
             norm_box = self._normalize_bbox(bbox, res_w, res_h)
-            telemetry_lines.append(
-                f"### Target {pkg.track_id}\n"
-                f"- Location: <box2d>{norm_box}</box2d>\n"
-                f"- Motion: {motion_desc}"
-            )
+            if show_motion_facts:
+                motion_desc = self._build_motion_description(feats)
+                telemetry_lines.append(
+                    f"### Target {pkg.track_id}\n"
+                    f"- Location: <box2d>{norm_box}</box2d>\n"
+                    f"- Motion Facts: {motion_desc}"
+                )
+            else:
+                telemetry_lines.append(
+                    f"### Target {pkg.track_id}\n"
+                    f"- Location: <box2d>{norm_box}</box2d>"
+                )
 
-        constraints = plan_context or "No additional constraints."
+        if constraint_intents:
+            intents_line = ", ".join(constraint_intents)
+            constraints = (
+                f"Constraint intents: {intents_line}\n"
+                "Use only the provided motion facts. Do not invent thresholds."
+            )
+        elif need_context:
+            constraints = "No constraint intents. Use motion facts only if they help answer the query."
+        else:
+            constraints = "No constraint intents. Focus on appearance and provided visuals."
         telemetry_block = "\n".join(telemetry_lines)
 
         filmstrip_note = (
@@ -297,40 +328,21 @@ class VllmAdapter:
         if not feats:
             return "No motion data available."
 
-        parts: List[str] = []
-        # Speed描述基于 norm_speed
-        if feats.norm_speed < 0.1:
-            parts.append("Static or barely moving")
-        elif feats.norm_speed < 1.0:
-            parts.append(f"Walking (norm_speed {feats.norm_speed:.1f})")
-        else:
-            parts.append(f"Running/fast (norm_speed {feats.norm_speed:.1f})")
-
-        # 线性度
-        if feats.linearity < 0.3:
-            parts.append("Wandering/loitering path (low linearity)")
-        elif feats.linearity > 0.8:
-            parts.append("Direct path (high linearity)")
-
-        # 方向/位移
         dx, dy = feats.displacement_vec
-        if abs(dx) > abs(dy):
-            direction = "right" if dx > 0 else "left"
-        else:
-            direction = "down (towards camera)" if dy > 0 else "up (away)"
-        parts.append(f"Moving {direction}")
-
-        # 尺度变化
-        if feats.scale_change > 1.2:
-            parts.append("Approaching the camera (scale increasing)")
-        elif feats.scale_change < 0.8:
-            parts.append("Leaving the camera (scale decreasing)")
-
         duration = getattr(feats, "duration_s", None)
-        if duration is not None:
-            parts.append(f"Duration: {duration:.1f}s")
+        duration_text = f"{duration:.1f}" if duration is not None else "unknown"
 
-        return ". ".join(parts) + "."
+        return (
+            "norm_speed={:.3f}; linearity={:.3f}; scale_change={:.3f}; "
+            "displacement_vec=({:.3f},{:.3f}); duration_s={}"
+        ).format(
+            feats.norm_speed,
+            feats.linearity,
+            feats.scale_change,
+            dx,
+            dy,
+            duration_text,
+        )
 
     def _extract_frames(
         self,
